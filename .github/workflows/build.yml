@@ -12,6 +12,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: python3 pctool/iesave.py selftest
+      - run: tests/parity.sh
 
   build:
     runs-on: ubuntu-latest
