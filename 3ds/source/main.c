@@ -8,9 +8,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <dirent.h>
 #include "codec.h"
 
-#define VERSION        "v0.1.1"
+#define VERSION        "v0.1.2"
 #define GALAXY_MAGIC   0x40F1
 #define LINK_OFFSET    0x90B4
 #define CHAPTER_OFFSET 0x9F1C
@@ -52,6 +53,8 @@ typedef struct {
     u32 size;
     u64 tid;
     const char *media;
+    int matches;              /* total files that decrypt to Galaxy magic */
+    char extra[4][0x220];     /* additional matches beyond the first */
 } SaveCtx;
 
 static bool try_load_file(SaveCtx *ctx, const char *path, u64 fsize)
@@ -73,6 +76,15 @@ static bool try_load_file(SaveCtx *ctx, const char *path, u64 fsize)
     memcpy(&magic, plain + 4, 2);
     logline("  %s (%lu b) magic 0x%04X", path, (unsigned long)size, magic);
     if (magic != GALAXY_MAGIC) { free(raw); free(plain); return false; }
+    ctx->matches++;
+    if (ctx->raw) {
+        logline("  ^ ADDITIONAL Galaxy save file!");
+        if (ctx->matches - 2 < 4)
+            snprintf(ctx->extra[ctx->matches - 2], 0x220, "%s", path);
+        free(raw);
+        free(plain);
+        return false;
+    }
     ctx->raw = raw;
     ctx->plain = plain;
     ctx->size = size;
@@ -88,7 +100,7 @@ static bool scan_dir(SaveCtx *ctx, const char *dirpath, int depth)
     FS_DirectoryEntry ent;
     u32 n;
     bool found = false;
-    while (!found && R_SUCCEEDED(FSDIR_Read(dir, &n, 1, &ent)) && n == 1) {
+    while (R_SUCCEEDED(FSDIR_Read(dir, &n, 1, &ent)) && n == 1) {
         char name[0x107];
         int j = 0;
         for (; j < 0x106 && ent.name[j]; j++)
@@ -98,9 +110,9 @@ static bool scan_dir(SaveCtx *ctx, const char *dirpath, int depth)
         snprintf(full, sizeof(full), "%s%s%s",
                  dirpath, (dirpath[strlen(dirpath) - 1] == '/') ? "" : "/", name);
         if (ent.attributes & FS_ATTRIBUTE_DIRECTORY) {
-            if (depth > 0) found = scan_dir(ctx, full, depth - 1);
+            if (depth > 0) found |= scan_dir(ctx, full, depth - 1);
         } else {
-            found = try_load_file(ctx, full, ent.fileSize);
+            found |= try_load_file(ctx, full, ent.fileSize);
         }
     }
     FSDIR_Close(dir);
@@ -120,7 +132,8 @@ static bool try_title(SaveCtx *ctx, FS_MediaType media, const char *mname, u64 t
     ctx->arch = arch;
     ctx->tid = tid;
     ctx->media = mname;
-    if (scan_dir(ctx, "/", 3)) return true;
+    scan_dir(ctx, "/", 3);
+    if (ctx->raw) return true;
     FSUSER_CloseArchive(arch);
     ctx->arch = 0;
     return false;
@@ -181,6 +194,54 @@ static bool backup_save(SaveCtx *ctx)
         return ok;
     }
     return false;
+}
+
+/* ponytail: picks the newest .bak by name (counter suffix sorts), assumes it
+ * belongs to the currently found save file; per-file selection if ever needed */
+static bool restore_backup(SaveCtx *ctx)
+{
+    DIR *d = opendir(BACKUP_DIR);
+    if (!d) { logline("no backup dir on SD"); return false; }
+    char best[0x280] = "";
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        size_t l = strlen(e->d_name);
+        if (l > 4 && !strcmp(e->d_name + l - 4, ".bak") && strcmp(e->d_name, best) > 0)
+            snprintf(best, sizeof(best), "%s", e->d_name);
+    }
+    closedir(d);
+    if (!best[0]) { logline("no .bak files in sd:" BACKUP_DIR); return false; }
+
+    char full[0x300];
+    snprintf(full, sizeof(full), BACKUP_DIR "/%s", best);
+    FILE *in = fopen(full, "rb");
+    if (!in) return false;
+    fseek(in, 0, SEEK_END);
+    long size = ftell(in);
+    fseek(in, 0, SEEK_SET);
+    u8 *buf = malloc(size);
+    bool rok = fread(buf, 1, size, in) == (size_t)size;
+    fclose(in);
+    if (!rok) { free(buf); return false; }
+
+    logline("restoring %s (%ld b)", best, size);
+    logline("into %s", ctx->filepath);
+
+    Handle f;
+    bool ok = false;
+    if (R_SUCCEEDED(FSUSER_OpenFile(&f, ctx->arch, fsMakePath(PATH_ASCII, ctx->filepath),
+                                    FS_OPEN_WRITE | FS_OPEN_CREATE, 0))) {
+        u32 written = 0;
+        ok = R_SUCCEEDED(FSFILE_SetSize(f, (u64)size))
+          && R_SUCCEEDED(FSFILE_Write(f, &written, 0, buf, (u32)size, FS_WRITE_FLUSH))
+          && written == (u32)size;
+        FSFILE_Close(f);
+        if (ok)
+            ok = R_SUCCEEDED(FSUSER_ControlArchive(ctx->arch, ARCHIVE_ACTION_COMMIT_SAVE_DATA,
+                                                   NULL, 0, NULL, 0));
+    }
+    free(buf);
+    return ok;
 }
 
 static bool write_save(SaveCtx *ctx, u8 level)
@@ -246,6 +307,13 @@ int main(void)
     }
     logline("found save, tid %08lX%08lX",
             (unsigned long)(ctx.tid >> 32), (unsigned long)ctx.tid);
+    logline("%d file(s) with Galaxy magic in archive", ctx.matches);
+    if (ctx.matches > 1)
+        logline("WARNING: multiple save files, only the\nfirst will be patched — report this!");
+    logline("");
+    logline("(photo this screen if reporting a bug)");
+    logline("Press any key for the menu.");
+    wait_key();
 
     int chapter = ctx.plain[CHAPTER_OFFSET];
     int current = ctx.plain[LINK_OFFSET];
@@ -268,11 +336,29 @@ int main(void)
             else
                 printf("Level 3 only if the version-exclusive\nteam is beaten, else the save glitches.\n");
             printf("\nLEFT/RIGHT: change  A: apply  START: quit\n");
+            printf("SELECT: restore newest backup from SD\n");
             dirty = false;
         }
         hidScanInput();
         u32 k = hidKeysDown();
         if (k & KEY_START) break;
+        if (k & KEY_SELECT) {
+            consoleClear();
+            printf("Restore newest backup from\nsd:" BACKUP_DIR " over the current save?\n\n");
+            printf("A: restore   B: cancel\n");
+            if (wait_key() & KEY_A) {
+                if (restore_backup(&ctx)) {
+                    printf("\nRestored and committed.\nExiting; relaunch before patching.\n");
+                    printf("\nPress any key.\n");
+                    wait_key();
+                    break;
+                }
+                printf("\nRESTORE FAILED, see log.\n\nPress any key.\n");
+                wait_key();
+            }
+            dirty = true;
+            continue;
+        }
         if (k & KEY_LEFT)  { if (sel > 0) sel--; dirty = true; }
         if (k & KEY_RIGHT) { if (sel < max) sel++; dirty = true; }
         if (k & KEY_A) {
