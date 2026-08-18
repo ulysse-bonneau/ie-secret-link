@@ -13,6 +13,21 @@ The save format research lives in [NOTES.md](NOTES.md). Format and offsets are p
 - `3ds/` — 3DS homebrew app (.cia): patches the game save directly on console,
   installable with FBI via "install from URL". (In progress.)
 
+## Install on 3DS
+
+FBI → Remote Install → Scan QR Code, or enter the URL manually:
+
+```
+https://github.com/ulysse-bonneau/ie-secret-link/releases/latest/download/ie-secret-link.cia
+```
+
+QR code for that URL: [render it here](https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=https%3A%2F%2Fgithub.com%2Fulysse-bonneau%2Fie-secret-link%2Freleases%2Flatest%2Fdownload%2Fie-secret-link.cia) and scan with FBI.
+
+The app finds the Big Bang/Supernova save automatically (game card or installed title),
+backs up the original save to `sd:/ie-secret-link/` before every write, then patches the
+link level and fixes the checksum in place. A `.3dsx` for Homebrew Launcher is on the
+release page too.
+
 ## PC tool usage
 
 ```
