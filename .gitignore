@@ -1,0 +1,5 @@
+reference/
+__pycache__/
+work/
+*.ie
+*.bin
