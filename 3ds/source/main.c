@@ -52,7 +52,7 @@ static bool try_load_file(SaveCtx *ctx, const char *name, u64 fsize)
     ctx->raw = raw;
     ctx->plain = plain;
     ctx->size = size;
-    strncpy(ctx->filename, name, sizeof(ctx->filename) - 1);
+    snprintf(ctx->filename, sizeof(ctx->filename), "%s", name);
     return true;
 }
 
@@ -99,7 +99,7 @@ static bool find_save(SaveCtx *ctx)
 static bool backup_save(SaveCtx *ctx)
 {
     mkdir(BACKUP_DIR, 0777);
-    char path[256];
+    char path[0x140];
     for (int i = 0; i < 1000; i++) {
         snprintf(path, sizeof(path), BACKUP_DIR "/%s.%03d.bak", ctx->filename, i);
         FILE *probe = fopen(path, "rb");

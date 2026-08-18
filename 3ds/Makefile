@@ -172,11 +172,7 @@ all: $(BUILD) $(GFXBUILD) $(DEPSDIR) $(ROMFS_T3XFILES) $(T3XHFILES)
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
 
 cia: all
-	bannertool makebanner -i assets/banner.png -a assets/audio.wav -o $(BUILD)/banner.bnr
-	bannertool makesmdh -s "$(APP_TITLE)" -l "$(APP_DESCRIPTION)" -p "$(APP_AUTHOR)" -i $(ICON) -o $(BUILD)/icon.icn
-	makerom -f cia -o $(TARGET).cia -elf $(TARGET).elf -rsf app.rsf \
-		-banner $(BUILD)/banner.bnr -icon $(BUILD)/icon.icn -exefslogo -target t \
-		-DAPP_TITLE="$(APP_TITLE)" -DAPP_PRODUCT_CODE="$(APP_PRODUCT_CODE)" -DAPP_UNIQUE_ID=$(APP_UNIQUE_ID)
+	./package.sh
 
 $(BUILD):
 	@mkdir -p $@
