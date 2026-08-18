@@ -57,7 +57,8 @@ Offsets from `IEGOGalaxyHelper.cs`:
 
 ## Open questions / TODO
 
-- [ ] Title IDs of Big Bang / Supernova (JPN) for mounting the save archive from homebrew.
+- [x] Title IDs (JPN): Big Bang `000400000010BA00`, Supernova `000400000010BB00`
+      (sources: iegogalaxyeng.netlify.app, cia-3ds.com).
 - [ ] Name + size of the save file inside the 3DS save archive (Checkpoint dump layout).
       Fallback plan: enumerate archive root, pick the file whose decrypt yields magic `0x40F1`.
 - [ ] Verify the game accepts an in-place FS write + archive commit (CMAC is recomputed by
