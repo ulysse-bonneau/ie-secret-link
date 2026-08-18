@@ -10,8 +10,9 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include "codec.h"
+#include "unlock_data.h"
 
-#define VERSION        "v0.1.2"
+#define VERSION        "v0.2.0"
 #define GALAXY_MAGIC   0x40F1
 #define LINK_OFFSET    0x90B4
 #define CHAPTER_OFFSET 0x9F1C
@@ -244,9 +245,8 @@ static bool restore_backup(SaveCtx *ctx)
     return ok;
 }
 
-static bool write_save(SaveCtx *ctx, u8 level)
+static bool commit_plain(SaveCtx *ctx)
 {
-    ctx->plain[LINK_OFFSET] = level;
     u8 *enc = malloc(ctx->size);
     memcpy(enc, ctx->plain, ctx->size);
     ie_xor_body(enc, ctx->size);
@@ -337,6 +337,7 @@ int main(void)
                 printf("Level 3 only if the version-exclusive\nteam is beaten, else the save glitches.\n");
             printf("\nLEFT/RIGHT: change  A: apply  START: quit\n");
             printf("SELECT: restore newest backup from SD\n");
+            printf("Y: unlock download/QR/GO-CS link content\n");
             dirty = false;
         }
         hidScanInput();
@@ -361,6 +362,38 @@ int main(void)
         }
         if (k & KEY_LEFT)  { if (sel > 0) sel--; dirty = true; }
         if (k & KEY_RIGHT) { if (sel < max) sel++; dirty = true; }
+        if (k & KEY_Y) {
+            consoleClear();
+            printf("Unlock ALL data download + QR code +\nGO/CS link (SD Link) content.\n\n");
+            if (chapter < 2) {
+                printf("Refused: requires chapter >= 2.\n\nPress any key.\n");
+                wait_key();
+            } else if (ctx.size < 0x2F064) {
+                printf("Refused: save too small (?).\n\nPress any key.\n");
+                wait_key();
+            } else {
+                printf("Undo only via backup restore (SELECT).\n\n");
+                printf("A: unlock   B: cancel\n");
+                if (wait_key() & KEY_A) {
+                    printf("\nBacking up original save to SD...\n");
+                    if (!backup_save(&ctx)) {
+                        printf("Backup FAILED, not touching the save.\n");
+                    } else {
+                        for (u32 i = 0; i < sizeof(UNLOCK_REGIONS) / sizeof(*UNLOCK_REGIONS); i++)
+                            memcpy(ctx.plain + UNLOCK_REGIONS[i].offset,
+                                   UNLOCK_REGIONS[i].data, UNLOCK_REGIONS[i].len);
+                        if (commit_plain(&ctx))
+                            printf("Unlocked and committed. Check the\nInalink in-game.\n");
+                        else
+                            printf("WRITE FAILED. Save may be untouched;\nbackup is on SD either way.\n");
+                    }
+                    printf("\nPress any key.\n");
+                    wait_key();
+                }
+            }
+            dirty = true;
+            continue;
+        }
         if (k & KEY_A) {
             consoleClear();
             printf("Set link level %d -> %d\n\n", current, sel);
@@ -375,7 +408,7 @@ int main(void)
             printf("\nBacking up original save to SD...\n");
             if (!backup_save(&ctx)) {
                 printf("Backup FAILED, not touching the save.\n");
-            } else if (write_save(&ctx, (u8)sel)) {
+            } else if ((ctx.plain[LINK_OFFSET] = (u8)sel), commit_plain(&ctx)) {
                 current = sel;
                 printf("Patched and committed. Start the game\nand check the Inalink.\n");
             } else {

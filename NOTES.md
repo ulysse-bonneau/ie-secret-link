@@ -64,3 +64,21 @@ Offsets from `IEGOGalaxyHelper.cs`:
 - [ ] Verify the game accepts an in-place FS write + archive commit (CMAC is recomputed by
       FS on commit; the anti-rollback secure value is not touched by editing file contents).
 - [ ] Confirm on real hardware that link levels 1/2 unlock the expected Supernova content.
+
+## SD Link / data download unlock (UnlockAllData)
+
+The editor's "Unlock Data Download + QRcode + Link with GO/CS Content" button
+(chapter >= 2 required) writes these regions into the decrypted save
+(`IEGOGalaxy.cs` SaveSaveInfo, UnlockAllData):
+
+| Offset    | Len | Content                                  |
+|-----------|-----|------------------------------------------|
+| `0x8F62`  | 2   | `B9 08`                                  |
+| `0x8F6A`  | 2   | `46 C9`                                  |
+| `0x8FFD`  | 3   | `1C 0E FE`                               |
+| `0x9000`  | 11  | flag bits                                |
+| `0x902F`  | 9   | flag bits                                |
+| `0x2ECB0` | 948 | record table (id + hash pairs, opaque)   |
+
+Ported verbatim into `3ds/source/unlock_data.h` (generated from the C# source).
+Blanket unlock — the editor does not split IE1/2/3 vs GO vs CS link content.
