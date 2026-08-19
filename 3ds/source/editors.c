@@ -24,6 +24,22 @@ static void wr16(SaveCtx *ctx, u32 off, s16 v) { memcpy(ctx->plain + off, &v, 2)
 
 /* ---- secret link ---- */
 
+bool link_apply(SaveCtx *ctx, int sel)
+{
+    const GameDef *g = ctx->game;
+    int current = ctx->plain[g->link_off];
+    if (sel == current) return false;
+    char msg[160];
+    snprintf(msg, sizeof(msg), "Set link level %d -> %d?%s", current, sel,
+             (sel == 3) ? "\n\nLevel 3 REQUIRES the version-exclusive\nteam beaten. Glitched save otherwise." : "");
+    if (!ui_dialog((sel == 3) ? "I beat it, proceed" : "confirm", msg, sel == 3)) return false;
+    ui_header();
+    ctx->plain[g->link_off] = (u8)sel;
+    if (apply_changes(ctx)) return true;
+    ctx->plain[g->link_off] = (u8)current;
+    return false;
+}
+
 void link_level_editor(SaveCtx *ctx)
 {
     const GameDef *g = ctx->game;
@@ -65,15 +81,8 @@ void link_level_editor(SaveCtx *ctx)
         if (k & KEY_LEFT)  { if (sel > 0) sel--; dirty = true; }
         if (k & KEY_RIGHT) { if (sel < max) sel++; dirty = true; }
         if ((k & KEY_A) && sel != current) {
-            char msg[160];
-            snprintf(msg, sizeof(msg), "Set link level %d -> %d?%s", current, sel,
-                     (sel == 3) ? "\n\nLevel 3 REQUIRES the version-exclusive\nteam beaten. Glitched save otherwise." : "");
-            if (ui_dialog((sel == 3) ? "I beat it, proceed" : "confirm", msg, sel == 3)) {
-                ui_header();
-                ctx->plain[g->link_off] = (u8)sel;
-                if (apply_changes(ctx)) return;
-                ctx->plain[g->link_off] = (u8)current;
-            }
+            if (link_apply(ctx, sel)) return;
+            current = ctx->plain[g->link_off];
             dirty = true;
         }
         gfxFlushBuffers();
@@ -247,14 +256,16 @@ static void level_gp_tp(SaveCtx *ctx, u32 blk, const PlayerInfo *pi, int level)
 }
 
 /* seesaw pattern: which stat drops when training past freedom, per position.
- * Stat order: Kick Dribble Technique Block Speed Stamina Catch Luck.
- * -1 = pair unknown (falls back to a picker); fill in as pairs are confirmed
- * in-game and report them so the table can be completed. */
+ * Bidirectional pairs, stat order: Kick Dribble Technique Block Speed Stamina
+ * Catch Luck. GK: Kick<->Luck, Dribble<->Block, Catch<->Technique, Speed<->Stamina;
+ * DF: Kick<->Catch, Dribble<->Luck, Block<->Technique; MF: Kick<->Catch,
+ * Dribble<->Technique, Block<->Luck; FW: Kick<->Technique, Dribble<->Block,
+ * Catch<->Luck; Speed<->Stamina for all. */
 static const signed char SEESAW[4][8] = {
-    /* GK */ { -1, -1, -1, -1, -1, -1, -1, -1 },
-    /* DF */ { -1, -1, -1, -1, -1, -1, -1, -1 },
-    /* MF */ { -1, -1, -1, -1, -1, -1, -1, -1 },
-    /* FW */ {  2, -1, -1, -1, -1, -1, -1, -1 }, /* Kick drains Technique */
+    /* GK */ { 7, 3, 6, 1, 5, 4, 2, 0 },
+    /* DF */ { 6, 7, 3, 2, 5, 4, 0, 1 },
+    /* MF */ { 6, 2, 1, 7, 5, 4, 0, 3 },
+    /* FW */ { 2, 3, 0, 1, 5, 4, 7, 6 },
 };
 
 static int pos_index(const PlayerInfo *pi)
@@ -363,7 +374,7 @@ static void edit_player(SaveCtx *ctx, u32 blk, const PlayerInfo *pi)
         int budget = freedom + inv_sum;
 
         char rows[14][48];
-        snprintf(rows[0], 48, "Level      %-4d (adjusts GP/TP)", ctx->plain[blk + gp + 6]);
+        snprintf(rows[0], 48, "Level      %-4d (GP/TP exact at 99 only)", ctx->plain[blk + gp + 6]);
         snprintf(rows[1], 48, "GP         %d", rd16(ctx, blk + gp));
         snprintf(rows[2], 48, "TP         %d", rd16(ctx, blk + gp + 2));
         snprintf(rows[3], 48, "Freedom left    %d", freedom);
@@ -407,7 +418,8 @@ static void edit_player(SaveCtx *ctx, u32 blk, const PlayerInfo *pi)
             if (delta > 0) {
                 train_plus(ctx, blk, pi, i);
             } else if (delta < 0) {
-                /* untrain: give the point back to freedom */
+                /* untrain: give the point back to freedom, capped at the max */
+                if (freedom >= pi->freedom) continue;
                 wr16(ctx, blk + g->p_invest_off + i * 2, (s16)(inv[i] - 1));
                 wr16(ctx, blk + gp + 4, (s16)(freedom + 1));
             } else {
@@ -425,8 +437,10 @@ static void edit_player(SaveCtx *ctx, u32 blk, const PlayerInfo *pi)
                     ui_notice(msg, false);
                     continue;
                 }
+                int nfree = budget - nsum;
+                if (nfree > pi->freedom) nfree = pi->freedom;
                 wr16(ctx, blk + g->p_invest_off + i * 2, (s16)ninv);
-                wr16(ctx, blk + gp + 4, (s16)(budget - nsum));
+                wr16(ctx, blk + gp + 4, (s16)nfree);
             }
         } else if (pick == 12) {
             god_mode(ctx, blk, pi->name);

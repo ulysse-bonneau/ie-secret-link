@@ -93,6 +93,7 @@ void backup_manager(SaveCtx *ctx);
 
 /* editors.c */
 void link_level_editor(SaveCtx *ctx);
+bool link_apply(SaveCtx *ctx, int sel);
 void sdlink_unlock(SaveCtx *ctx);
 void saveinfo_editor(SaveCtx *ctx);
 void player_editor(SaveCtx *ctx);

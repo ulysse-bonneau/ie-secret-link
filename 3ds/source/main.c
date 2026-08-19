@@ -270,14 +270,19 @@ int main(void)
         }
 
         int cursor = 0;
+        int staged = -1; /* pending link level picked with LEFT/RIGHT on the menu row */
         bool quit = false;
         while (aptMainLoop()) {
             const GameDef *g = ctx.game;
             char linkrow[48], chrow[48];
-            if (g->link_kind == LINK_LEVEL)
-                snprintf(linkrow, sizeof(linkrow), "Secret link level        (now: %d)",
-                         ctx.plain[g->link_off]);
-            else
+            int link_now = (g->link_kind == LINK_LEVEL) ? ctx.plain[g->link_off] : 0;
+            if (g->link_kind == LINK_LEVEL) {
+                if (staged >= 0 && staged != link_now)
+                    snprintf(linkrow, sizeof(linkrow), "Secret link level  %d -> %d  (A: apply)",
+                             link_now, staged);
+                else
+                    snprintf(linkrow, sizeof(linkrow), "Secret link level        (now: %d)", link_now);
+            } else
                 snprintf(linkrow, sizeof(linkrow), "Unlock secret link (level 3)");
             const char *var = tid_variant(ctx.tid);
             if (g->chapter_off)
@@ -296,11 +301,27 @@ int main(void)
                 "Switch save",
                 "Quit",
             };
-            int pick = ui_list(chrow, items, 8, cursor);
+            int delta = 0;
+            int pick = ui_list_adj(chrow, items, 8, cursor, &delta);
             if (pick < 0 || pick == 7) { quit = true; break; }
             cursor = pick;
+            if (delta) {
+                if (pick == 0 && g->link_kind == LINK_LEVEL) {
+                    int chapter = g->chapter_off ? ctx.plain[g->chapter_off] : 99;
+                    int max = (chapter < 10) ? 2 : 3;
+                    int v = (staged < 0 ? link_now : staged) + delta;
+                    if (v >= 0 && v <= max) staged = v;
+                }
+                continue;
+            }
             switch (pick) {
-            case 0: link_level_editor(&ctx); break;
+            case 0:
+                if (g->link_kind == LINK_LEVEL && staged >= 0 && staged != link_now)
+                    link_apply(&ctx, staged);
+                else
+                    link_level_editor(&ctx);
+                staged = -1;
+                break;
             case 1: sdlink_unlock(&ctx); break;
             case 2: saveinfo_editor(&ctx); break;
             case 3: player_editor(&ctx); break;
