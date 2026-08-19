@@ -439,11 +439,22 @@ static void edit_player(SaveCtx *ctx, u32 blk, const PlayerInfo *pi)
             if (delta > 0) {
                 train_plus(ctx, blk, pi, i);
             } else if (delta < 0) {
-                /* untrain: give the point back to freedom, capped at the max */
-                if (freedom >= pi->freedom) continue;
                 if (pi->st[i] + inv[i] - 1 < 1) continue;
-                wr16(ctx, blk + g->p_invest_off + i * 2, (s16)(inv[i] - 1));
-                wr16(ctx, blk + gp + 4, (s16)(freedom + 1));
+                if (freedom == 0) {
+                    /* seesaw down: the paired stat gains the point */
+                    int p = pos_index(pi);
+                    if (p >= 0) {
+                        int victim = SEESAW[p][i];
+                        wr16(ctx, blk + g->p_invest_off + i * 2, (s16)(inv[i] - 1));
+                        wr16(ctx, blk + g->p_invest_off + victim * 2,
+                             (s16)(rd16(ctx, blk + g->p_invest_off + victim * 2) + 1));
+                    }
+                } else {
+                    /* untrain: give the point back to freedom, capped at the max */
+                    if (freedom >= pi->freedom) continue;
+                    wr16(ctx, blk + g->p_invest_off + i * 2, (s16)(inv[i] - 1));
+                    wr16(ctx, blk + gp + 4, (s16)(freedom + 1));
+                }
             } else {
                 int base = pi->st[i];
                 char hint[64];
