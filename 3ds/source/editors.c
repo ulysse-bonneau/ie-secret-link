@@ -1,15 +1,76 @@
 #include <stdlib.h>
 #include <string.h>
 #include "app.h"
+#include "codec.h"
 
 bool apply_changes(SaveCtx *ctx)
 {
+    const GameDef *g = ctx->game;
+
+    /* recap: diff the pending buffer against the last committed state */
+    u8 *old = malloc(ctx->size);
+    memcpy(old, ctx->raw, ctx->size);
+    ie_xor_body(old, ctx->size);
+
+    struct { const char *name; u32 s, e; } R[16];
+    int nr = 0;
+    R[nr++] = (typeof(R[0])){ "save info", g->time_off, g->team_off + NAME_FIELD_LEN };
+    R[nr++] = (typeof(R[0])){ "money/coins", g->money_off, g->money_off + 8 };
+    if (g->coin_off) R[nr++] = (typeof(R[0])){ "coins", g->coin_off, g->coin_off + 10 };
+    R[nr++] = (typeof(R[0])){ "secret link", g->link_off, g->link_off + 4 };
+    if (g->records_n) R[nr++] = (typeof(R[0])){ "play records", g->records_off, g->records_off + (u32)g->records_n };
+    R[nr++] = (typeof(R[0])){ "players", g->pdata_off, g->pdata_off + (u32)g->pmax * g->pblock };
+    R[nr++] = (typeof(R[0])){ "roster order", g->pindex_off, g->pindex_off + (u32)g->pmax * 4 };
+    R[nr++] = (typeof(R[0])){ "items", g->g1_off, g->g1_off + (u32)g->g1_n * 12 };
+    R[nr++] = (typeof(R[0])){ "equipment items", g->g2_off, g->g2_off + (u32)g->g2_n * 16 };
+    R[nr++] = (typeof(R[0])){ "owned items", g->g3_off, g->g3_off + (u32)g->g3_n * 8 };
+
+    u32 per[16] = {0}, other = 0, total = 0;
+    for (u32 i = 0; i < ctx->size - 8; i++) {
+        if (old[i] == ctx->plain[i]) continue;
+        total++;
+        bool hit = false;
+        for (int r = 0; r < nr; r++)
+            if (i >= R[r].s && i < R[r].e) { per[r]++; hit = true; break; }
+        if (!hit) other++;
+    }
+    free(old);
+    if (!total) {
+        ui_notice("No changes to save.", false);
+        return false;
+    }
+
+    ui_header();
+    printf(C_KEY " Pending changes" C_RESET " (%lu byte%s)\n\n", (unsigned long)total, total > 1 ? "s" : "");
+    logline("commit recap: %lu byte(s)", (unsigned long)total);
+    bool players_touched = false;
+    for (int r = 0; r < nr; r++) {
+        if (!per[r]) continue;
+        printf("  %-16s %lu byte%s\n", R[r].name, (unsigned long)per[r], per[r] > 1 ? "s" : "");
+        logline("  %s: %lu", R[r].name, (unsigned long)per[r]);
+        if (R[r].s == g->pdata_off) players_touched = true;
+    }
+    if (other) {
+        printf("  %-16s %lu byte%s\n", "other flags", (unsigned long)other, other > 1 ? "s" : "");
+        logline("  other: %lu", (unsigned long)other);
+    }
+    if (players_touched)
+        printf(C_DIM "\n GP/TP level curve is approximate\n (exact at level 99 only)." C_RESET "\n");
+    printf("\n An auto-backup is written first.\n\n");
+    printf(C_KEY " A " C_RESET "commit   " C_KEY " B " C_RESET "cancel\n");
+    while (aptMainLoop()) {
+        u32 k = wait_key();
+        if (k & KEY_A) break;
+        if (k & KEY_B) { logline("commit cancelled"); return false; }
+    }
+
     printf("\n Backing up original save to SD...\n");
     if (!backup_save(ctx, NULL)) {
         ui_notice("Backup FAILED, save untouched.", false);
         return false;
     }
     if (commit_plain(ctx)) {
+        logline("committed OK");
         ui_notice("Saved and committed.", true);
         return true;
     }
@@ -160,12 +221,28 @@ static void write_name(SaveCtx *ctx, u32 off, const char *name)
 
 enum { F_NAME, F_TEAM, F_TIME, F_PRESTIGE, F_FRIEND, F_COIN0 };
 
+void records_unlock(SaveCtx *ctx)
+{
+    const GameDef *g = ctx->game;
+    ui_header();
+    if (!g->records_n || ctx->size < g->records_off + (u32)g->records_n) {
+        ui_notice("Play records unknown for this game.", false);
+        return;
+    }
+    if (!ui_dialog("unlock", "Unlock ALL play records?\n\nUndo only via backup restore.", false))
+        return;
+    memset(ctx->plain + g->records_off, 0xFF, (size_t)g->records_n);
+    apply_changes(ctx);
+}
+
 void saveinfo_editor(SaveCtx *ctx)
 {
     const GameDef *g = ctx->game;
     static const char *coin_names[5] = { "Bronze", "Silver", "Gold", "Platinum", "Rainbow" };
     bool modified = false;
     int cursor = 0;
+    u8 *si_snap = malloc(ctx->size);
+    memcpy(si_snap, ctx->plain, ctx->size);
 
     while (aptMainLoop()) {
         char name[32], team[32];
@@ -251,10 +328,11 @@ void saveinfo_editor(SaveCtx *ctx)
         }
     }
 
-    if (modified && ui_dialog("save changes", "Commit save info changes?", false)) {
-        ui_header();
-        apply_changes(ctx);
+    if (modified && !apply_changes(ctx)) {
+        /* reverted below from the snapshot */
+        memcpy(ctx->plain, si_snap, ctx->size);
     }
+    free(si_snap);
 }
 
 /* ---- players ---- */
@@ -418,6 +496,145 @@ static const PlayerInfo *player_db_picker(SaveCtx *ctx, bool skip_owned)
     return (pick < 0) ? NULL : found[pick];
 }
 
+
+static const MoveInfo *move_info(const GameDef *g, u32 id)
+{
+    int lo = 0, hi = g->mdb_count - 1;
+    while (lo <= hi) {
+        int mid = (lo + hi) / 2;
+        if (g->mdb[mid].id == id) return &g->mdb[mid];
+        if (g->mdb[mid].id < id) lo = mid + 1; else hi = mid - 1;
+    }
+    return NULL;
+}
+
+static const MoveInfo *move_db_picker(SaveCtx *ctx)
+{
+    const GameDef *g = ctx->game;
+    char filt[24];
+    if (!ui_text_opt("Filter (empty = all)", filt, sizeof(filt))) return NULL;
+    static const MoveInfo *found[PICK_MAX];
+    static char mlabels[PICK_MAX][36];
+    const char *lines[PICK_MAX];
+    int n = 0;
+    for (int i = 0; i < g->mdb_count && n < PICK_MAX; i++) {
+        const MoveInfo *mi = &g->mdb[i];
+        if (!name_match(mi->name, filt)) continue;
+        found[n] = mi;
+        snprintf(mlabels[n], 36, "%-2s %s", mi->kind, mi->name);
+        lines[n] = mlabels[n];
+        n++;
+    }
+    if (!n) {
+        ui_header();
+        ui_notice("No matching move.", false);
+        return NULL;
+    }
+    int pick = ui_list("Pick a move", lines, n, 0);
+    return (pick < 0) ? NULL : found[pick];
+}
+
+static void moves_editor(SaveCtx *ctx, u32 blk, const char *pname)
+{
+    const GameDef *g = ctx->game;
+    int cursor = 0;
+    while (aptMainLoop()) {
+        char rows[6][48];
+        const char *lines[6];
+        for (int s = 0; s < 6; s++) {
+            u32 e = blk + g->p_moves_off + (u32)s * 12;
+            u32 id;
+            memcpy(&id, ctx->plain + e, 4);
+            const MoveInfo *mi = id ? move_info(g, id) : NULL;
+            if (!id)
+                snprintf(rows[s], 48, "%d  (empty%s)", s + 1, (s < 4) ? "" : " extra slot");
+            else if (mi)
+                snprintf(rows[s], 48, "%d  %-2s %-22s Lv%d", s + 1, mi->kind, mi->name, ctx->plain[e + 4]);
+            else
+                snprintf(rows[s], 48, "%d  ?? %08lX Lv%d", s + 1, (unsigned long)id, ctx->plain[e + 4]);
+            lines[s] = rows[s];
+        }
+
+        int delta = 0;
+        int pick = ui_list_adj(pname, lines, 6, cursor, &delta);
+        if (pick < 0) return;
+        cursor = pick;
+        u32 e = blk + g->p_moves_off + (u32)pick * 12;
+        u32 id;
+        memcpy(&id, ctx->plain + e, 4);
+
+        if (delta == 2) {
+            /* X: clear an extra slot; innate moves stay */
+            if (pick < 4 || !id) continue;
+            if (ui_dialog("clear slot", "Remove this extra move?", false))
+                memset(ctx->plain + e, 0, 12);
+            continue;
+        }
+        if (delta) {
+            if (!id) continue;
+            int lv = ctx->plain[e + 4] + delta;
+            if (lv >= 1 && lv <= 5) ctx->plain[e + 4] = (u8)lv;
+            continue;
+        }
+        if (pick < 4) {
+            if (!id) continue;
+            int v;
+            if (ui_number("Move level (1-5)", ctx->plain[e + 4], 1, 5, &v))
+                ctx->plain[e + 4] = (u8)v;
+        } else {
+            const MoveInfo *mi = move_db_picker(ctx);
+            if (!mi) continue;
+            memset(ctx->plain + e, 0, 12);
+            memcpy(ctx->plain + e, &mi->id, 4);
+            ctx->plain[e + 4] = 1;
+            ctx->plain[e + 6] = 1; /* learned */
+        }
+    }
+}
+
+static void avatar_editor(SaveCtx *ctx, u32 blk, const char *pname)
+{
+    const GameDef *g = ctx->game;
+    char filt[24];
+    if (!ui_text_opt("Filter (empty = all)", filt, sizeof(filt))) return;
+    static const AvatarInfo *found[PICK_MAX];
+    static char alabels[PICK_MAX][40];
+    const char *lines[PICK_MAX + 1];
+    lines[0] = "[ None (remove avatar) ]";
+    int n = 1;
+    for (int i = 0; i < g->adb_count && n < PICK_MAX; i++) {
+        const AvatarInfo *ai = &g->adb[i];
+        if (!ai->spirit && !g->totem_off) continue; /* totems are Galaxy-only */
+        if (!name_match(ai->name, filt)) continue;
+        found[n] = ai;
+        snprintf(alabels[n], 40, "%-6s %s", ai->spirit ? "Spirit" : "Totem", ai->name);
+        lines[n] = alabels[n];
+        n++;
+    }
+    int pick = ui_list(pname, lines, n, 0);
+    if (pick < 0) return;
+
+    u32 av = blk + g->p_avatar_off;
+    if (pick == 0) {
+        memset(ctx->plain + av, 0, 6);
+        if (g->totem_off) wr32(ctx, blk, 0);
+        return;
+    }
+    const AvatarInfo *ai = found[pick];
+    if (ai->spirit) {
+        int lv = 1;
+        if (!ui_number("Avatar level (1-5)", 1, 1, 5, &lv)) return;
+        memcpy(ctx->plain + av, &ai->id, 4);
+        ctx->plain[av + 4] = (u8)lv;
+        ctx->plain[av + 5] = 0;
+        if (g->totem_off) wr32(ctx, blk, 0);
+    } else {
+        /* totem lives in the field at the start of the block */
+        memset(ctx->plain + av, 0, 6);
+        wr32(ctx, blk, (s32)ai->id);
+    }
+}
+
 static void god_mode(SaveCtx *ctx, u32 blk, const char *pname)
 {
     const GameDef *g = ctx->game;
@@ -490,7 +707,7 @@ static void edit_player(SaveCtx *ctx, u32 blk, const PlayerInfo *pi)
         int budget = freedom + inv_sum;
         int level = ctx->plain[blk + gp + 6];
 
-        char rows[15][48];
+        char rows[17][48];
         snprintf(rows[0], 48, "Level      %-4d (GP/TP exact at 99 only)", level);
         snprintf(rows[1], 48, "GP         %d", rd16(ctx, blk + gp));
         snprintf(rows[2], 48, "TP         %d", rd16(ctx, blk + gp + 2));
@@ -502,11 +719,13 @@ static void edit_player(SaveCtx *ctx, u32 blk, const PlayerInfo *pi)
         snprintf(rows[12], 48, "[ God mode (free edit) ]");
         snprintf(rows[13], 48, "[ Reset freedom & invested points ]");
         snprintf(rows[14], 48, "[ Replace with another player ]");
-        const char *lines[15];
-        for (int i = 0; i < 15; i++) lines[i] = rows[i];
+        snprintf(rows[15], 48, "[ Moves ]");
+        snprintf(rows[16], 48, "[ Avatar ]");
+        const char *lines[17];
+        for (int i = 0; i < 17; i++) lines[i] = rows[i];
 
         int delta = 0;
-        int pick = ui_list_adj(pi->name, lines, 15, cursor, &delta);
+        int pick = ui_list_adj(pi->name, lines, 17, cursor, &delta);
         if (pick < 0) return;
         cursor = pick;
 
@@ -597,6 +816,10 @@ static void edit_player(SaveCtx *ctx, u32 blk, const PlayerInfo *pi)
             int idx = rd32(ctx, blk + g->p_id_off - 4);
             write_player_block(ctx, blk, np, level, idx);
             return;
+        } else if (pick == 15) {
+            moves_editor(ctx, blk, pi->name);
+        } else if (pick == 16) {
+            avatar_editor(ctx, blk, pi->name);
         }
     }
 }
@@ -698,13 +921,7 @@ void player_editor(SaveCtx *ctx)
 
     if (memcmp(snap, ctx->plain + g->pdata_off, region) != 0 ||
         memcmp(snap + region, ctx->plain + g->pindex_off, iregion) != 0) {
-        if (ui_dialog("save changes", "Commit player changes?", false)) {
-            ui_header();
-            if (!apply_changes(ctx)) {
-                memcpy(ctx->plain + g->pdata_off, snap, region);
-                memcpy(ctx->plain + g->pindex_off, snap + region, iregion);
-            }
-        } else {
+        if (!apply_changes(ctx)) {
             memcpy(ctx->plain + g->pdata_off, snap, region);
             memcpy(ctx->plain + g->pindex_off, snap + region, iregion);
         }
@@ -1099,13 +1316,8 @@ void inventory_editor(SaveCtx *ctx)
     }
 
     if (memcmp(snap, ctx->plain + snap_start, snap_len) != 0) {
-        if (ui_dialog("save changes", "Commit inventory changes?", false)) {
-            ui_header();
-            if (!apply_changes(ctx))
-                memcpy(ctx->plain + snap_start, snap, snap_len);
-        } else {
+        if (!apply_changes(ctx))
             memcpy(ctx->plain + snap_start, snap, snap_len);
-        }
     }
     free(snap);
 }

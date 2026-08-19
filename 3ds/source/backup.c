@@ -89,11 +89,8 @@ static bool bak_matches_game(SaveCtx *ctx, const char *full, long size)
     return ok && ie_magic(head, seed) == ctx->game->magic;
 }
 
-static bool restore_file(SaveCtx *ctx, const char *bakname)
+static bool restore_from_path(SaveCtx *ctx, const char *full)
 {
-    char dir[0x40], full[0x300];
-    game_dir(ctx, dir, sizeof(dir));
-    snprintf(full, sizeof(full), "%s/%s", dir, bakname);
     FILE *in = fopen(full, "rb");
     if (!in) return false;
     fseek(in, 0, SEEK_END);
@@ -104,7 +101,7 @@ static bool restore_file(SaveCtx *ctx, const char *bakname)
     fclose(in);
     if (!rok || size < 0x1000) { free(buf); return false; }
 
-    logline("restoring %s (%ld b) into %s", bakname, size, ctx->filepath);
+    logline("restoring %s (%ld b) into %s", full, size, ctx->filepath);
     Handle f;
     bool ok = false;
     if (R_SUCCEEDED(FSUSER_OpenFile(&f, ctx->arch, fsMakePath(PATH_ASCII, ctx->filepath),
@@ -202,8 +199,8 @@ void backup_manager(SaveCtx *ctx)
                      var ? var : ctx->game->name);
             if (!ui_dialog("restore", msg, false)) continue;
             ui_header();
-            ui_notice(restore_file(ctx, bak) ? "Restored and committed."
-                                             : "RESTORE FAILED, see log.", true);
+            ui_notice(restore_from_path(ctx, full) ? "Restored and committed."
+                                                    : "RESTORE FAILED, see log.", true);
         } else if (act == 1) {
             char base[40];
             snprintf(base, sizeof(base), "%.*s", (int)(strlen(bak) - 4), bak);
@@ -223,5 +220,73 @@ void backup_manager(SaveCtx *ctx)
             ui_header();
             ui_notice(remove(full) == 0 ? "Deleted." : "Delete failed.", true);
         }
+    }
+}
+
+#define EXPORT_DIR BACKUP_DIR "/export"
+
+void export_import(SaveCtx *ctx)
+{
+    int cursor = 0;
+    while (aptMainLoop()) {
+        const char *actions[] = { "Export save to sd:" EXPORT_DIR,
+                                  "Import a file from sd:" EXPORT_DIR };
+        int pick = ui_list("Export / Import", actions, 2, cursor);
+        if (pick < 0) return;
+        cursor = pick;
+
+        if (pick == 0) {
+            mkdir(EXPORT_DIR, 0777);
+            time_t t = time(NULL);
+            struct tm *tm = localtime(&t);
+            char path[0x300];
+            snprintf(path, sizeof(path), EXPORT_DIR "/%s-%04d-%02d-%02d-%02d%02d.sav",
+                     ctx->game->shortname, tm->tm_year + 1900, tm->tm_mon + 1,
+                     tm->tm_mday, tm->tm_hour, tm->tm_min);
+            FILE *out = fopen(path, "wb");
+            bool ok = out && fwrite(ctx->raw, 1, ctx->size, out) == ctx->size;
+            if (out) fclose(out);
+            if (ok) logline("exported: sd:%s", path);
+            ui_header();
+            ui_notice(ok ? "Exported (encrypted raw save)." : "Export FAILED.", ok);
+            continue;
+        }
+
+        static char names[MAX_BAKS][BAKNAME];
+        int n = 0;
+        DIR *d = opendir(EXPORT_DIR);
+        if (d) {
+            struct dirent *e;
+            while ((e = readdir(d)) && n < MAX_BAKS) {
+                if (e->d_name[0] == '.') continue;
+                size_t l = strlen(e->d_name);
+                if (l < BAKNAME) snprintf(names[n++], BAKNAME, "%s", e->d_name);
+            }
+            closedir(d);
+        }
+        if (!n) {
+            ui_header();
+            ui_notice("Nothing in sd:" EXPORT_DIR ".", false);
+            continue;
+        }
+        qsort(names, n, BAKNAME, cmp_desc);
+        const char *lines[MAX_BAKS];
+        for (int i = 0; i < n; i++) lines[i] = names[i];
+        int f = ui_list("Import file", lines, n, 0);
+        if (f < 0) continue;
+        char full[0x300];
+        struct stat st;
+        snprintf(full, sizeof(full), EXPORT_DIR "/%s", names[f]);
+        if (stat(full, &st) != 0 || !bak_matches_game(ctx, full, st.st_size)) {
+            ui_header();
+            ui_notice("Refused: not a save of this game.", false);
+            continue;
+        }
+        char msg[128];
+        snprintf(msg, sizeof(msg), "Import %s\nover the current save?", names[f]);
+        if (!ui_dialog("import", msg, true)) continue;
+        ui_header();
+        ui_notice(restore_from_path(ctx, full) ? "Imported and committed."
+                                               : "IMPORT FAILED, see log.", true);
     }
 }

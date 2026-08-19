@@ -5,8 +5,10 @@
 #include "unlock_data.h"
 #include "players_db.h"
 #include "items_db.h"
+#include "moves_db.h"
+#include "avatars_db.h"
 
-#define VERSION "v0.9.0"
+#define VERSION "v0.10.0"
 
 #define BACKUP_DIR     "/IESM"
 #define OLD_BACKUP_DIR "/ie-secret-link"
@@ -32,6 +34,11 @@ typedef struct {
     int pmax, pblock;      /* block stride; 0 = players unsupported */
     u32 p_id_off, p_gp_off, p_invest_off; /* TP = gp+2, Freedom = gp+4, Level = gp+6 */
     u32 p_moves_off;       /* 6 x 12-byte MoveBlock inside the player block */
+    u32 p_avatar_off;      /* u32 id + u8 level + u8 usage */
+    u32 totem_off;         /* Galaxy only: totem id at block start (0 = none) */
+    u32 records_off; int records_n; /* play-record bitfield bytes (0 = unknown) */
+    const MoveInfo *mdb;   int mdb_count;
+    const AvatarInfo *adb; int adb_count;
     const PlayerInfo *db;
     int db_count;
     /* inventory: group1 (idx,id,qty = 12 B), group2 (idx,id,qty,equipped = 16 B) */
@@ -92,6 +99,7 @@ bool ui_number(const char *hint, int initial, int min, int max, int *out);
 void migrate_backups(void);
 bool backup_save(SaveCtx *ctx, const char *name); /* NULL = auto date name */
 void backup_manager(SaveCtx *ctx);
+void export_import(SaveCtx *ctx);
 
 /* editors.c */
 void link_level_editor(SaveCtx *ctx);
@@ -100,4 +108,5 @@ void sdlink_unlock(SaveCtx *ctx);
 void saveinfo_editor(SaveCtx *ctx);
 void player_editor(SaveCtx *ctx);
 void inventory_editor(SaveCtx *ctx);
+void records_unlock(SaveCtx *ctx);
 bool apply_changes(SaveCtx *ctx);
