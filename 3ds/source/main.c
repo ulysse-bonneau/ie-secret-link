@@ -28,6 +28,13 @@ void logline(const char *fmt, ...)
     }
 }
 
+const char *tid_variant(u64 tid)
+{
+    if (tid == 0x000400000010BA00ULL) return "Big Bang";
+    if (tid == 0x000400000010BB00ULL) return "Supernova";
+    return NULL;
+}
+
 /* ---- discovery ---- */
 
 #define MAX_SAVES 16
@@ -217,7 +224,8 @@ static const SaveEntry *save_picker(void)
     static char labels[MAX_SAVES][48];
     const char *lines[MAX_SAVES];
     for (int i = 0; i < n_entries; i++) {
-        snprintf(labels[i], 48, "%-21s %-4s %s", entries[i].game->name,
+        const char *var = tid_variant(entries[i].tid);
+        snprintf(labels[i], 48, "%-21s %-4s %s", var ? var : entries[i].game->name,
                  entries[i].media_name, entries[i].filepath);
         lines[i] = labels[i];
     }
@@ -271,11 +279,12 @@ int main(void)
                          ctx.plain[g->link_off]);
             else
                 snprintf(linkrow, sizeof(linkrow), "Unlock secret link (level 3)");
+            const char *var = tid_variant(ctx.tid);
             if (g->chapter_off)
-                snprintf(chrow, sizeof(chrow), "%s - chapter %d", g->name,
+                snprintf(chrow, sizeof(chrow), "%s - chapter %d", var ? var : g->name,
                          ctx.plain[g->chapter_off]);
             else
-                snprintf(chrow, sizeof(chrow), "%s", g->name);
+                snprintf(chrow, sizeof(chrow), "%s", var ? var : g->name);
 
             const char *items[] = {
                 linkrow,

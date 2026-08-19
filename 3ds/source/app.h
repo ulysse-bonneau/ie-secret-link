@@ -61,6 +61,7 @@ typedef struct {
 
 /* main.c */
 extern FILE *logfp;
+const char *tid_variant(u64 tid); /* "Big Bang"/"Supernova" or NULL */
 void logline(const char *fmt, ...);
 bool commit_plain(SaveCtx *ctx);
 

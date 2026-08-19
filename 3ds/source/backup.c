@@ -56,11 +56,14 @@ bool backup_save(SaveCtx *ctx, const char *name)
     game_dir(ctx, dir, sizeof(dir));
     time_t t = time(NULL);
     struct tm *tm = localtime(&t);
+    const char *var = tid_variant(ctx->tid);
+    /* BB/Supernova share one format+folder: tag the filename with the version */
+    const char *tag = var ? ((var[0] == 'B') ? "bb-" : "sn-") : "";
     if (name)
         snprintf(path, sizeof(path), "%s/%s.bak", dir, name);
     else
-        snprintf(path, sizeof(path), "%s/auto-%04d-%02d-%02d-%02d%02d%02d.bak",
-                 dir, tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday,
+        snprintf(path, sizeof(path), "%s/%sauto-%04d-%02d-%02d-%02d%02d%02d.bak",
+                 dir, tag, tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday,
                  tm->tm_hour, tm->tm_min, tm->tm_sec);
     FILE *out = fopen(path, "wb");
     if (!out) return false;
@@ -170,8 +173,10 @@ void backup_manager(SaveCtx *ctx)
             char name[40] = "";
             time_t t = time(NULL);
             struct tm *tm = localtime(&t);
+            const char *var = tid_variant(ctx->tid);
             char def[48];
-            snprintf(def, sizeof(def), "%04d-%02d-%02d-%02d%02d",
+            snprintf(def, sizeof(def), "%s%04d-%02d-%02d-%02d%02d",
+                     var ? ((var[0] == 'B') ? "bb-" : "sn-") : "",
                      tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday, tm->tm_hour, tm->tm_min);
             if (!ui_text("Backup name", def, name, 40)) continue;
             ui_header();
@@ -191,8 +196,10 @@ void backup_manager(SaveCtx *ctx)
                 ui_notice("Refused: backup is not a save of\nthis game.", false);
                 continue;
             }
-            char msg[128];
-            snprintf(msg, sizeof(msg), "Restore %s\nover the current save?", bak);
+            const char *var = tid_variant(ctx->tid);
+            char msg[160];
+            snprintf(msg, sizeof(msg), "Restore %s\nover the current %s save?", bak,
+                     var ? var : ctx->game->name);
             if (!ui_dialog("restore", msg, false)) continue;
             ui_header();
             ui_notice(restore_file(ctx, bak) ? "Restored and committed."
