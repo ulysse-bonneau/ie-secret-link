@@ -12,6 +12,11 @@ static s16 rd16(SaveCtx *ctx, u32 off) { s16 v; memcpy(&v, ctx->plain + off, 2);
 static void wr16(SaveCtx *ctx, u32 off, s16 v) { memcpy(ctx->plain + off, &v, 2); }
 
 #define PICK_MAX 4096
+
+/* forward declarations (definitions live in the teams section below) */
+static const ItemInfo *item_by_index(SaveCtx *ctx, int idx);
+static int owned_item_picker(SaveCtx *ctx, int sub, const char *title);
+static void dismiss_player(SaveCtx *ctx, int k, int count);
 static const void *pick_ptr[PICK_MAX];
 static char pick_lab[PICK_MAX][40];
 static const char *pick_lines[PICK_MAX];
