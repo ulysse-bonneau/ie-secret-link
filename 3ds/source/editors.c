@@ -22,6 +22,21 @@ static void wr32(SaveCtx *ctx, u32 off, s32 v) { memcpy(ctx->plain + off, &v, 4)
 static s16 rd16(SaveCtx *ctx, u32 off) { s16 v; memcpy(&v, ctx->plain + off, 2); return v; }
 static void wr16(SaveCtx *ctx, u32 off, s16 v) { memcpy(ctx->plain + off, &v, 2); }
 
+#define PICK_MAX 900
+
+static bool name_match(const char *name, const char *filt)
+{
+    if (!filt[0]) return true;
+    size_t fl = strlen(filt);
+    for (const char *p = name; *p; p++) {
+        size_t i = 0;
+        while (i < fl && p[i] &&
+               ((p[i] | 0x20) == (filt[i] | 0x20))) i++;
+        if (i == fl) return true;
+    }
+    return false;
+}
+
 /* ---- secret link ---- */
 
 bool link_apply(SaveCtx *ctx, int sel)
@@ -711,18 +726,6 @@ static const ItemInfo *item_info(const GameDef *g, u32 id)
 }
 
 
-static bool name_match(const char *name, const char *filt)
-{
-    if (!filt[0]) return true;
-    size_t fl = strlen(filt);
-    for (const char *p = name; *p; p++) {
-        size_t i = 0;
-        while (i < fl && p[i] &&
-               ((p[i] | 0x20) == (filt[i] | 0x20))) i++;
-        if (i == fl) return true;
-    }
-    return false;
-}
 
 /* highest inventory index across all three groups */
 static int max_item_index(SaveCtx *ctx)
@@ -794,8 +797,6 @@ static void item_remove(SaveCtx *ctx, int grp, int k)
             (size_t)(cnt - 1 - k) * stride);
     memset(ctx->plain + base + (u32)(cnt - 1) * stride, 0, stride);
 }
-
-#define PICK_MAX 900
 
 /* filtered picker over the item DB restricted to one subcategory;
  * returns the picked ItemInfo or NULL */
