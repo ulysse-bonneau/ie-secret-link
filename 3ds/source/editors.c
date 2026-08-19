@@ -1,82 +1,8 @@
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include "app.h"
 #include "codec.h"
-
-bool apply_changes(SaveCtx *ctx)
-{
-    const GameDef *g = ctx->game;
-
-    /* recap: diff the pending buffer against the last committed state */
-    u8 *old = malloc(ctx->size);
-    memcpy(old, ctx->raw, ctx->size);
-    ie_xor_body(old, ctx->size);
-
-    struct { const char *name; u32 s, e; } R[16];
-    int nr = 0;
-    R[nr++] = (typeof(R[0])){ "save info", g->time_off, g->team_off + NAME_FIELD_LEN };
-    R[nr++] = (typeof(R[0])){ "money/coins", g->money_off, g->money_off + 8 };
-    if (g->coin_off) R[nr++] = (typeof(R[0])){ "coins", g->coin_off, g->coin_off + 10 };
-    R[nr++] = (typeof(R[0])){ "secret link", g->link_off, g->link_off + 4 };
-    if (g->records_n) R[nr++] = (typeof(R[0])){ "play records", g->records_off, g->records_off + (u32)g->records_n };
-    R[nr++] = (typeof(R[0])){ "players", g->pdata_off, g->pdata_off + (u32)g->pmax * g->pblock };
-    R[nr++] = (typeof(R[0])){ "roster order", g->pindex_off, g->pindex_off + (u32)g->pmax * 4 };
-    R[nr++] = (typeof(R[0])){ "items", g->g1_off, g->g1_off + (u32)g->g1_n * 12 };
-    R[nr++] = (typeof(R[0])){ "equipment items", g->g2_off, g->g2_off + (u32)g->g2_n * 16 };
-    R[nr++] = (typeof(R[0])){ "owned items", g->g3_off, g->g3_off + (u32)g->g3_n * 8 };
-
-    u32 per[16] = {0}, other = 0, total = 0;
-    for (u32 i = 0; i < ctx->size - 8; i++) {
-        if (old[i] == ctx->plain[i]) continue;
-        total++;
-        bool hit = false;
-        for (int r = 0; r < nr; r++)
-            if (i >= R[r].s && i < R[r].e) { per[r]++; hit = true; break; }
-        if (!hit) other++;
-    }
-    free(old);
-    if (!total) {
-        ui_notice("No changes to save.", false);
-        return false;
-    }
-
-    ui_header();
-    printf(C_KEY " Pending changes" C_RESET " (%lu byte%s)\n\n", (unsigned long)total, total > 1 ? "s" : "");
-    logline("commit recap: %lu byte(s)", (unsigned long)total);
-    bool players_touched = false;
-    for (int r = 0; r < nr; r++) {
-        if (!per[r]) continue;
-        printf("  %-16s %lu byte%s\n", R[r].name, (unsigned long)per[r], per[r] > 1 ? "s" : "");
-        logline("  %s: %lu", R[r].name, (unsigned long)per[r]);
-        if (R[r].s == g->pdata_off) players_touched = true;
-    }
-    if (other) {
-        printf("  %-16s %lu byte%s\n", "other flags", (unsigned long)other, other > 1 ? "s" : "");
-        logline("  other: %lu", (unsigned long)other);
-    }
-    if (players_touched)
-        printf(C_DIM "\n GP/TP level curve is approximate\n (exact at level 99 only)." C_RESET "\n");
-    printf("\n An auto-backup is written first.\n\n");
-    printf(C_KEY " A " C_RESET "commit   " C_KEY " B " C_RESET "cancel\n");
-    while (aptMainLoop()) {
-        u32 k = wait_key();
-        if (k & KEY_A) break;
-        if (k & KEY_B) { logline("commit cancelled"); return false; }
-    }
-
-    printf("\n Backing up original save to SD...\n");
-    if (!backup_save(ctx, NULL)) {
-        ui_notice("Backup FAILED, save untouched.", false);
-        return false;
-    }
-    if (commit_plain(ctx)) {
-        logline("committed OK");
-        ui_notice("Saved and committed.", true);
-        return true;
-    }
-    ui_notice("WRITE FAILED. Backup is on SD.", false);
-    return false;
-}
 
 static s32 rd32(SaveCtx *ctx, u32 off) { s32 v; memcpy(&v, ctx->plain + off, 4); return v; }
 static void wr32(SaveCtx *ctx, u32 off, s32 v) { memcpy(ctx->plain + off, &v, 4); }
@@ -191,11 +117,11 @@ void sdlink_unlock(SaveCtx *ctx)
 
 /* ---- save info ---- */
 
-static void read_name(SaveCtx *ctx, u32 off, char *out, size_t outsz)
+static void read_name_buf(const u8 *buf, u32 off, char *out, size_t outsz)
 {
     size_t o = 0, i = 0;
-    while (o < outsz - 1 && i < NAME_FIELD_LEN && ctx->plain[off + i]) {
-        u8 c = ctx->plain[off + i];
+    while (o < outsz - 1 && i < NAME_FIELD_LEN && buf[off + i]) {
+        u8 c = buf[off + i];
         if (c < 0x80) {
             out[o++] = (char)c;
             i++;
@@ -203,10 +129,15 @@ static void read_name(SaveCtx *ctx, u32 off, char *out, size_t outsz)
             /* one placeholder per UTF-8 codepoint (JP names can't render) */
             out[o++] = '?';
             i++;
-            while (i < NAME_FIELD_LEN && (ctx->plain[off + i] & 0xC0) == 0x80) i++;
+            while (i < NAME_FIELD_LEN && (buf[off + i] & 0xC0) == 0x80) i++;
         }
     }
     out[o] = 0;
+}
+
+static void read_name(SaveCtx *ctx, u32 off, char *out, size_t outsz)
+{
+    read_name_buf(ctx->plain, off, out, outsz);
 }
 
 static void write_name(SaveCtx *ctx, u32 off, const char *name)
@@ -576,12 +507,20 @@ static void moves_editor(SaveCtx *ctx, u32 blk, const char *pname)
             if (lv >= 1 && lv <= 5) ctx->plain[e + 4] = (u8)lv;
             continue;
         }
-        if (pick < 4) {
-            if (!id) continue;
-            int v;
-            if (ui_number("Move level (1-5)", ctx->plain[e + 4], 1, 5, &v))
-                ctx->plain[e + 4] = (u8)v;
-        } else {
+        bool replace = (pick >= 4 || !id);
+        if (!replace) {
+            const char *acts[] = { "Set move level", "Replace move" };
+            int a = ui_list(lines[pick], acts, 2, 0);
+            if (a < 0) continue;
+            replace = (a == 1);
+            if (!replace) {
+                int v;
+                if (ui_number("Move level (1-5)", ctx->plain[e + 4], 1, 5, &v))
+                    ctx->plain[e + 4] = (u8)v;
+                continue;
+            }
+        }
+        {
             const MoveInfo *mi = move_db_picker(ctx);
             if (!mi) continue;
             memset(ctx->plain + e, 0, 12);
@@ -712,9 +651,10 @@ static void edit_player(SaveCtx *ctx, u32 blk, const PlayerInfo *pi)
         snprintf(rows[1], 48, "GP         %d", rd16(ctx, blk + gp));
         snprintf(rows[2], 48, "TP         %d", rd16(ctx, blk + gp + 2));
         snprintf(rows[3], 48, "Freedom left    %d", freedom);
+        const char *ap = (level < 99) ? "~" : "";
         for (int i = 0; i < 8; i++) {
             int b = stat_base(pi, i, level);
-            snprintf(rows[4 + i], 48, "%-9s %3d %+4d = %d", STAT_NAMES[i], b, inv[i], b + inv[i]);
+            snprintf(rows[4 + i], 48, "%-9s %s%3d %+4d = %s%d", STAT_NAMES[i], ap, b, inv[i], ap, b + inv[i]);
         }
         snprintf(rows[12], 48, "[ God mode (free edit) ]");
         snprintf(rows[13], 48, "[ Reset freedom & invested points ]");
@@ -1320,4 +1260,201 @@ void inventory_editor(SaveCtx *ctx)
             memcpy(ctx->plain + snap_start, snap, snap_len);
     }
     free(snap);
+}
+
+/* ---- commit recap ---- */
+
+static int rl_n, rl_over;
+static char rl[64][48];
+
+static void remit(const char *fmt, ...)
+{
+    char line[64];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(line, sizeof(line), fmt, ap);
+    va_end(ap);
+    if (logfp) { fprintf(logfp, "  %s\n", line); fflush(logfp); }
+    if (rl_n < 64) snprintf(rl[rl_n++], 48, "%s", line);
+    else rl_over++;
+}
+
+static s32 b32(const u8 *p, u32 off) { s32 v; memcpy(&v, p + off, 4); return v; }
+static s16 b16(const u8 *p, u32 off) { s16 v; memcpy(&v, p + off, 2); return v; }
+
+/* look up an item's quantity in a buffer; -1 = not owned (g3 ownership = 1) */
+static int buf_item_qty(const GameDef *g, const u8 *p, u32 id)
+{
+    for (int grp = 0; grp < 3; grp++) {
+        u32 base = (grp == 0) ? g->g1_off : (grp == 1) ? g->g2_off : g->g3_off;
+        u32 stride = (grp == 0) ? 12 : (grp == 1) ? 16 : 8;
+        int cnt = (grp == 0) ? g->g1_n : (grp == 1) ? g->g2_n : g->g3_n;
+        for (int i = 0; i < cnt; i++) {
+            u32 v;
+            memcpy(&v, p + base + (u32)i * stride + 4, 4);
+            if (v == id) return (grp == 2) ? 1 : b32(p, base + (u32)i * stride + 8);
+        }
+    }
+    return -1;
+}
+
+static void recap_items_side(SaveCtx *ctx, const u8 *a, const u8 *b, bool removed)
+{
+    const GameDef *g = ctx->game;
+    for (int grp = 0; grp < 3; grp++) {
+        u32 base = (grp == 0) ? g->g1_off : (grp == 1) ? g->g2_off : g->g3_off;
+        u32 stride = (grp == 0) ? 12 : (grp == 1) ? 16 : 8;
+        int cnt = (grp == 0) ? g->g1_n : (grp == 1) ? g->g2_n : g->g3_n;
+        for (int i = 0; i < cnt; i++) {
+            u32 id;
+            memcpy(&id, a + base + (u32)i * stride + 4, 4);
+            if (!id) continue;
+            int qa = (grp == 2) ? 1 : b32(a, base + (u32)i * stride + 8);
+            int qb = buf_item_qty(g, b, id);
+            const ItemInfo *ii = item_info(g, id);
+            const char *nm = ii ? ii->name : "unknown item";
+            if (qb < 0)
+                remit("%s %.28s%s", removed ? "-" : "+", nm,
+                      (grp == 2) ? "" : "");
+            else if (!removed && qa != qb)
+                remit("%.26s x%d -> x%d", nm, qb, qa);
+        }
+    }
+}
+
+static void recap_players(SaveCtx *ctx, const u8 *old)
+{
+    const GameDef *g = ctx->game;
+    for (int i = 0; i < g->pmax; i++) {
+        u32 blk = g->pdata_off + (u32)i * g->pblock;
+        if (!memcmp(old + blk, ctx->plain + blk, (size_t)g->pblock)) continue;
+        u32 oid, nid;
+        memcpy(&oid, old + blk + g->p_id_off, 4);
+        memcpy(&nid, ctx->plain + blk + g->p_id_off, 4);
+        const PlayerInfo *op = oid ? player_info(g, oid) : NULL;
+        const PlayerInfo *np = nid ? player_info(g, nid) : NULL;
+        const char *nm = np ? np->name : (op ? op->name : "?");
+        if (oid != nid) {
+            if (!oid) remit("+ recruit %.32s", nm);
+            else remit("%.16s -> %.20s", op ? op->name : "?", nm);
+            continue;
+        }
+        int olv = old[blk + g->p_gp_off + 6], nlv = ctx->plain[blk + g->p_gp_off + 6];
+        if (olv != nlv) remit("%.20s Lv %d -> %d", nm, olv, nlv);
+        if (b16(old, blk + g->p_gp_off) != b16(ctx->plain, blk + g->p_gp_off))
+            remit("%.20s GP %d -> %d", nm, b16(old, blk + g->p_gp_off), b16(ctx->plain, blk + g->p_gp_off));
+        if (b16(old, blk + g->p_gp_off + 2) != b16(ctx->plain, blk + g->p_gp_off + 2))
+            remit("%.20s TP %d -> %d", nm, b16(old, blk + g->p_gp_off + 2), b16(ctx->plain, blk + g->p_gp_off + 2));
+        if (b16(old, blk + g->p_gp_off + 4) != b16(ctx->plain, blk + g->p_gp_off + 4))
+            remit("%.16s freedom %d -> %d", nm, b16(old, blk + g->p_gp_off + 4), b16(ctx->plain, blk + g->p_gp_off + 4));
+        for (int s = 0; s < 8; s++) {
+            s16 oi = b16(old, blk + g->p_invest_off + s * 2);
+            s16 ni = b16(ctx->plain, blk + g->p_invest_off + s * 2);
+            if (oi == ni) continue;
+            if (np)
+                remit("%.12s %s %d -> %d", nm, STAT_NAMES[s],
+                      stat_base(np, s, olv) + oi, stat_base(np, s, nlv) + ni);
+            else
+                remit("%.12s %s %+d -> %+d", nm, STAT_NAMES[s], oi, ni);
+        }
+        if (memcmp(old + blk + g->p_moves_off, ctx->plain + blk + g->p_moves_off, 72))
+            remit("%.24s: moves changed", nm);
+        if (memcmp(old + blk + g->p_avatar_off, ctx->plain + blk + g->p_avatar_off, 6) ||
+            (g->totem_off && b32(old, blk) != b32(ctx->plain, blk)))
+            remit("%.24s: avatar changed", nm);
+    }
+}
+
+bool apply_changes(SaveCtx *ctx)
+{
+    const GameDef *g = ctx->game;
+
+    u8 *old = malloc(ctx->size);
+    memcpy(old, ctx->raw, ctx->size);
+    ie_xor_body(old, ctx->size);
+    if (!memcmp(old, ctx->plain, ctx->size - 8)) {
+        free(old);
+        ui_notice("No changes to save.", false);
+        return false;
+    }
+
+    rl_n = 0;
+    rl_over = 0;
+    if (logfp) fprintf(logfp, "commit recap:\n");
+
+    /* save info */
+    char oa[32], nb[32];
+    read_name_buf(old, g->name_off, oa, sizeof(oa));
+    read_name_buf(ctx->plain, g->name_off, nb, sizeof(nb));
+    if (strcmp(oa, nb)) remit("Name %.12s -> %.12s", oa, nb);
+    read_name_buf(old, g->team_off, oa, sizeof(oa));
+    read_name_buf(ctx->plain, g->team_off, nb, sizeof(nb));
+    if (strcmp(oa, nb)) remit("Team %.12s -> %.12s", oa, nb);
+    if (b32(old, g->time_off) != b32(ctx->plain, g->time_off))
+        remit("Play time %dh -> %dh", b32(old, g->time_off) / 3600, b32(ctx->plain, g->time_off) / 3600);
+    if (b32(old, g->money_off) != b32(ctx->plain, g->money_off))
+        remit("Prestige %ld -> %ld", (long)b32(old, g->money_off), (long)b32(ctx->plain, g->money_off));
+    if (g->has_friendship && b32(old, g->money_off + 4) != b32(ctx->plain, g->money_off + 4))
+        remit("Friendship %ld -> %ld", (long)b32(old, g->money_off + 4), (long)b32(ctx->plain, g->money_off + 4));
+    if (g->coin_off) {
+        static const char *cn[5] = { "Bronze", "Silver", "Gold", "Platinum", "Rainbow" };
+        for (int i = 0; i < 5; i++)
+            if (b16(old, g->coin_off + i * 2) != b16(ctx->plain, g->coin_off + i * 2))
+                remit("%s coins %d -> %d", cn[i], b16(old, g->coin_off + i * 2), b16(ctx->plain, g->coin_off + i * 2));
+    }
+
+    if (old[g->link_off] != ctx->plain[g->link_off] ||
+        (g->link_kind == LINK_GO_WORD && memcmp(old + g->link_off, ctx->plain + g->link_off, 4)))
+        remit("Secret link %d -> %d", old[g->link_off], ctx->plain[g->link_off]);
+
+    if (g->records_n && memcmp(old + g->records_off, ctx->plain + g->records_off, (size_t)g->records_n))
+        remit("Play records unlocked");
+
+    recap_players(ctx, old);
+    recap_items_side(ctx, ctx->plain, old, false); /* added + qty changes */
+    recap_items_side(ctx, old, ctx->plain, true);  /* removed */
+
+    /* anything not covered above (unlock flag regions etc.) */
+    u32 other = 0;
+    for (u32 i = 0; i < ctx->size - 8; i++) {
+        if (old[i] == ctx->plain[i]) continue;
+        if (i >= g->time_off && i < g->team_off + NAME_FIELD_LEN) continue;
+        if (i >= g->money_off && i < g->money_off + 8) continue;
+        if (g->coin_off && i >= g->coin_off && i < g->coin_off + 10) continue;
+        if (i >= g->link_off && i < g->link_off + 4) continue;
+        if (g->records_n && i >= g->records_off && i < g->records_off + (u32)g->records_n) continue;
+        if (i >= g->pdata_off && i < g->pdata_off + (u32)g->pmax * g->pblock) continue;
+        if (i >= g->pindex_off && i < g->pindex_off + (u32)g->pmax * 4) continue;
+        if (i >= g->g1_off && i < g->g1_off + (u32)g->g1_n * 12) continue;
+        if (i >= g->g2_off && i < g->g2_off + (u32)g->g2_n * 16) continue;
+        if (i >= g->g3_off && i < g->g3_off + (u32)g->g3_n * 8) continue;
+        other++;
+    }
+    bool players_touched = memcmp(old + g->pdata_off, ctx->plain + g->pdata_off,
+                                  (size_t)g->pmax * g->pblock) != 0;
+    free(old);
+    if (other) remit("unlock/other flags: %lu byte(s)", (unsigned long)other);
+    if (rl_over) remit("...and %d more (see log.txt)", rl_over);
+    if (players_touched) remit("(GP/TP + stats approx below Lv 99)");
+
+    const char *lines[64];
+    for (int i = 0; i < rl_n; i++) lines[i] = rl[i];
+    if (ui_list("Commit? A = yes, B = cancel", lines, rl_n, 0) < 0) {
+        logline("commit cancelled");
+        return false;
+    }
+
+    ui_header();
+    printf("\n Backing up original save to SD...\n");
+    if (!backup_save(ctx, NULL)) {
+        ui_notice("Backup FAILED, save untouched.", false);
+        return false;
+    }
+    if (commit_plain(ctx)) {
+        logline("committed OK");
+        ui_notice("Saved and committed.", true);
+        return true;
+    }
+    ui_notice("WRITE FAILED. Backup is on SD.", false);
+    return false;
 }
