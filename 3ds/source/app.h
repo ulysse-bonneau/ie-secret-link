@@ -7,8 +7,9 @@
 #include "items_db.h"
 #include "moves_db.h"
 #include "avatars_db.h"
+#include "records_db.h"
 
-#define VERSION "v0.12.0"
+#define VERSION "v0.13.0"
 
 #define BACKUP_DIR     "/IESM"
 #define OLD_BACKUP_DIR "/ie-secret-link"
@@ -35,8 +36,14 @@ typedef struct {
     u32 p_id_off, p_gp_off, p_invest_off; /* TP = gp+2, Freedom = gp+4, Level = gp+6 */
     u32 p_moves_off;       /* 6 x 12-byte MoveBlock inside the player block */
     u32 p_avatar_off;      /* u32 id + u8 level + u8 usage */
+    u32 p_equip_off;       /* 4 x i32 inventory indexes: boots,bracelet,pendant,gloves */
+    u32 p_invoke_off;      /* invoke/armed bit byte (GO: CanInvoke byte) */
+    u32 p_style_off;       /* 0 = no style field (GO) */
+    u32 p_part_off;        /* participation s16, score = +2 */
+    u32 p_key_off;         /* GO only: key-player byte (0 = none) */
     u32 totem_off;         /* Galaxy only: totem id at block start (0 = none) */
     u32 records_off; int records_n; /* play-record bitfield bytes (0 = unknown) */
+    const RecordInfo *rdb; int rdb_count;
     const MoveInfo *mdb;   int mdb_count;
     const AvatarInfo *adb; int adb_count;
     const PlayerInfo *db;

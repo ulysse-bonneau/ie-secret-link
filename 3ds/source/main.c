@@ -292,22 +292,29 @@ int main(void)
             else
                 snprintf(chrow, sizeof(chrow), "%s", var ? var : g->name);
 
-            const char *items[] = {
-                linkrow,
-                g->unlock_label,
-                "Save info (name, money, time)",
-                "Players (level, stats)",
-                "Inventory (item quantities)",
-                "Backups (new, restore, rename)",
-                "Switch save",
-                "Quit",
-            };
+            enum { M_LINK, M_UNLOCK, M_RECORDS, M_INFO, M_PLAYERS, M_INV,
+                   M_TEAMS, M_BACKUPS, M_EXPORT, M_SWITCH, M_QUIT };
+            const char *items[11];
+            int ids[11], ni = 0;
+            items[ni] = linkrow; ids[ni++] = M_LINK;
+            items[ni] = g->unlock_label; ids[ni++] = M_UNLOCK;
+            if (g->records_n) { items[ni] = "Unlock all play records"; ids[ni++] = M_RECORDS; }
+            items[ni] = "Save info (name, money, time)"; ids[ni++] = M_INFO;
+            items[ni] = "Players (level, stats, moves)"; ids[ni++] = M_PLAYERS;
+            items[ni] = "Inventory (items)"; ids[ni++] = M_INV;
+            if (g->t_count) { items[ni] = "Custom teams (tactics)"; ids[ni++] = M_TEAMS; }
+            items[ni] = "Backups (new, restore, rename)"; ids[ni++] = M_BACKUPS;
+            items[ni] = "Export / import save file"; ids[ni++] = M_EXPORT;
+            items[ni] = "Switch save"; ids[ni++] = M_SWITCH;
+            items[ni] = "Quit"; ids[ni++] = M_QUIT;
+
             int delta = 0;
-            int pick = ui_list_adj(chrow, items, 8, cursor, &delta);
-            if (pick < 0 || pick == 7) { quit = true; break; }
+            int pick = ui_list_adj(chrow, items, ni, cursor, &delta);
+            if (pick < 0 || ids[pick] == M_QUIT) { quit = true; break; }
             cursor = pick;
             if (delta) {
-                if (pick == 0 && g->link_kind == LINK_LEVEL) {
+                if (ids[pick] == M_LINK && g->link_kind == LINK_LEVEL &&
+                    (delta == 1 || delta == -1)) {
                     int chapter = g->chapter_off ? ctx.plain[g->chapter_off] : 99;
                     int max = (chapter < 10) ? 2 : 3;
                     int v = (staged < 0 ? link_now : staged) + delta;
@@ -315,22 +322,24 @@ int main(void)
                 }
                 continue;
             }
-            switch (pick) {
-            case 0:
+            if (ids[pick] == M_SWITCH) break;
+            switch (ids[pick]) {
+            case M_LINK:
                 if (g->link_kind == LINK_LEVEL && staged >= 0 && staged != link_now)
                     link_apply(&ctx, staged);
                 else
                     link_level_editor(&ctx);
                 staged = -1;
                 break;
-            case 1: sdlink_unlock(&ctx); break;
-            case 2: saveinfo_editor(&ctx); break;
-            case 3: player_editor(&ctx); break;
-            case 4: inventory_editor(&ctx); break;
-            case 5: backup_manager(&ctx); break;
-            case 6: break;
+            case M_UNLOCK: sdlink_unlock(&ctx); break;
+            case M_RECORDS: records_unlock(&ctx); break;
+            case M_INFO: saveinfo_editor(&ctx); break;
+            case M_PLAYERS: player_editor(&ctx); break;
+            case M_INV: inventory_editor(&ctx); break;
+            case M_TEAMS: teams_editor(&ctx); break;
+            case M_BACKUPS: backup_manager(&ctx); break;
+            case M_EXPORT: export_import(&ctx); break;
             }
-            if (pick == 6) break;
         }
         unload(&ctx);
         if (quit || n_entries <= 1) break;

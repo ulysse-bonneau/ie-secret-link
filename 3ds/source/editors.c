@@ -190,18 +190,62 @@ static void write_name(SaveCtx *ctx, u32 off, const char *name)
 
 enum { F_NAME, F_TEAM, F_TIME, F_PRESTIGE, F_FRIEND, F_COIN0 };
 
+/* records are stored one byte per group; record j of a group with cnt
+ * entries sits at bit (cnt-1-j), mirroring the reference editor's BitArray */
+static int record_bit(const GameDef *g, int idx)
+{
+    int grp = g->rdb[idx].group;
+    int cnt = 0, j = -1;
+    for (int i = 0; i < g->rdb_count; i++) {
+        if (g->rdb[i].group != grp) continue;
+        if (i == idx) j = cnt;
+        cnt++;
+    }
+    return cnt - 1 - j;
+}
+
 void records_unlock(SaveCtx *ctx)
 {
     const GameDef *g = ctx->game;
-    ui_header();
-    if (!g->records_n || ctx->size < g->records_off + (u32)g->records_n) {
+    if (!g->records_n || !g->rdb_count || ctx->size < g->records_off + (u32)g->records_n) {
+        ui_header();
         ui_notice("Play records unknown for this game.", false);
         return;
     }
-    if (!ui_dialog("unlock", "Unlock ALL play records?\n\nUndo only via backup restore.", false))
-        return;
-    memset(ctx->plain + g->records_off, 0xFF, (size_t)g->records_n);
-    apply_changes(ctx);
+
+    u8 *snap = malloc((size_t)g->records_n);
+    memcpy(snap, ctx->plain + g->records_off, (size_t)g->records_n);
+
+    int cursor = 0;
+    while (aptMainLoop()) {
+        static char rows[128][48];
+        const char *lines[128];
+        snprintf(rows[0], 48, "[ Unlock all ]");
+        lines[0] = rows[0];
+        int n = 1;
+        for (int i = 0; i < g->rdb_count && n < 128; i++) {
+            u8 byte = ctx->plain[g->records_off + g->rdb[i].group];
+            bool on = (byte >> record_bit(g, i)) & 1;
+            snprintf(rows[n], 48, "[%c] %s", on ? 'x' : ' ', g->rdb[i].name);
+            lines[n] = rows[n];
+            n++;
+        }
+        int pick = ui_list("Play records (A: toggle)", lines, n, cursor);
+        if (pick < 0) break;
+        cursor = pick;
+        if (pick == 0) {
+            memset(ctx->plain + g->records_off, 0xFF, (size_t)g->records_n);
+            continue;
+        }
+        int i = pick - 1;
+        ctx->plain[g->records_off + g->rdb[i].group] ^= (u8)(1 << record_bit(g, i));
+    }
+
+    if (memcmp(snap, ctx->plain + g->records_off, (size_t)g->records_n) != 0) {
+        if (!apply_changes(ctx))
+            memcpy(ctx->plain + g->records_off, snap, (size_t)g->records_n);
+    }
+    free(snap);
 }
 
 void saveinfo_editor(SaveCtx *ctx)
@@ -561,18 +605,27 @@ static void moves_editor(SaveCtx *ctx, u32 blk, const char *pname)
             if (lv >= 1 && lv <= 5) ctx->plain[e + 4] = (u8)lv;
             continue;
         }
-        bool replace = (pick >= 4 || !id);
+        bool replace = !id;
         if (!replace) {
-            const char *acts[] = { "Set move level", "Replace move" };
-            int a = ui_list(lines[pick], acts, 2, 0);
+            char lstate[24];
+            snprintf(lstate, sizeof(lstate), "Learned: %s", ctx->plain[e + 6] ? "yes" : "no");
+            const char *acts[] = { "Set move level", "Replace move", lstate, "Set usage count" };
+            int a = ui_list(lines[pick], acts, 4, 0);
             if (a < 0) continue;
-            replace = (a == 1);
-            if (!replace) {
+            if (a == 0) {
                 int v;
                 if (ui_number("Move level (1-5)", ctx->plain[e + 4], 1, 5, &v))
                     ctx->plain[e + 4] = (u8)v;
                 continue;
             }
+            if (a == 2) { ctx->plain[e + 6] = !ctx->plain[e + 6]; continue; }
+            if (a == 3) {
+                int v;
+                if (ui_number("Usage count", ctx->plain[e + 5], 0, 255, &v))
+                    ctx->plain[e + 5] = (u8)v;
+                continue;
+            }
+            replace = true;
         }
         {
             const MoveInfo *mi = move_db_picker(ctx);
@@ -643,6 +696,271 @@ static void avatar_editor(SaveCtx *ctx, u32 blk, const char *pname)
         memset(ctx->plain + av, 0, 6);
         wr32(ctx, blk, (s32)ai->id);
     }
+}
+
+
+/* keep group-2 equipped counters consistent with player equipment fields */
+static void recompute_equipped(SaveCtx *ctx)
+{
+    const GameDef *g = ctx->game;
+    for (int i = 0; i < g->g2_n; i++) {
+        u32 e = g->g2_off + (u32)i * 16;
+        u32 id;
+        memcpy(&id, ctx->plain + e + 4, 4);
+        if (!id) continue;
+        int idx = rd32(ctx, e);
+        int count = 0;
+        for (int p = 0; p < g->pmax; p++) {
+            u32 blk = g->pdata_off + (u32)p * g->pblock;
+            u32 pid;
+            memcpy(&pid, ctx->plain + blk + g->p_id_off, 4);
+            if (!pid) continue;
+            for (int s = 0; s < 4; s++)
+                if (rd32(ctx, blk + g->p_equip_off + (u32)s * 4) == idx) count++;
+        }
+        wr32(ctx, e + 12, count);
+        if (rd32(ctx, e + 8) < count) wr32(ctx, e + 8, count);
+    }
+}
+
+static void equipment_editor(SaveCtx *ctx, u32 blk, const char *pname)
+{
+    const GameDef *g = ctx->game;
+    static const char *slot_names[4] = { "Boots", "Bracelet", "Pendant", "Gloves" };
+    static const int slot_subs[4] = { 1, 3, 4, 2 };
+    int cursor = 0;
+    while (aptMainLoop()) {
+        char rows[4][48];
+        const char *lines[4];
+        for (int s = 0; s < 4; s++) {
+            const ItemInfo *ii = item_by_index(ctx, rd32(ctx, blk + g->p_equip_off + (u32)s * 4));
+            snprintf(rows[s], 48, "%-9s %s", slot_names[s], ii ? ii->name : "(none)");
+            lines[s] = rows[s];
+        }
+        int delta = 0;
+        int pick = ui_list_adj(pname, lines, 4, cursor, &delta);
+        if (pick < 0) { recompute_equipped(ctx); return; }
+        cursor = pick;
+        if (delta == 2) { wr32(ctx, blk + g->p_equip_off + (u32)pick * 4, 0); continue; }
+        if (delta) continue;
+        int idx = owned_item_picker(ctx, slot_subs[pick], slot_names[pick]);
+        if (idx) wr32(ctx, blk + g->p_equip_off + (u32)pick * 4, idx);
+    }
+}
+
+/* per-player flags and counters */
+static void flags_editor(SaveCtx *ctx, u32 blk, const char *pname)
+{
+    const GameDef *g = ctx->game;
+    int cursor = 0;
+    while (aptMainLoop()) {
+        char rows[6][48];
+        const char *lines[6];
+        int ids[6], n = 0;
+        u8 inv = ctx->plain[blk + g->p_invoke_off];
+        if (g->p_style_off) {
+            snprintf(rows[n], 48, "Style          %d", (ctx->plain[blk + g->p_style_off] >> 4) & 0xF);
+            ids[n] = 0; lines[n] = rows[n]; n++;
+            snprintf(rows[n], 48, "Invoke spirit  %s", (inv & 8) ? "yes" : "no");
+            ids[n] = 1; lines[n] = rows[n]; n++;
+            snprintf(rows[n], 48, "Armed          %s", (inv & 16) ? "yes" : "no");
+            ids[n] = 2; lines[n] = rows[n]; n++;
+        } else {
+            snprintf(rows[n], 48, "Can invoke     %s", inv ? "yes" : "no");
+            ids[n] = 5; lines[n] = rows[n]; n++;
+        }
+        if (g->p_key_off) {
+            snprintf(rows[n], 48, "Key player     %s", ctx->plain[blk + g->p_key_off] ? "yes" : "no");
+            ids[n] = 6; lines[n] = rows[n]; n++;
+        }
+        snprintf(rows[n], 48, "Participation  %d", rd16(ctx, blk + g->p_part_off));
+        ids[n] = 3; lines[n] = rows[n]; n++;
+        snprintf(rows[n], 48, "Goals scored   %d", rd16(ctx, blk + g->p_part_off + 2));
+        ids[n] = 4; lines[n] = rows[n]; n++;
+
+        int delta = 0;
+        int pick = ui_list_adj(pname, lines, n, cursor, &delta);
+        if (pick < 0) return;
+        cursor = pick;
+        int v;
+        switch (ids[pick]) {
+        case 0: {
+            int st = (ctx->plain[blk + g->p_style_off] >> 4) & 0xF;
+            if (delta == 1 || delta == -1) v = st + delta;
+            else if (!delta && ui_number("Style (0-15)", st, 0, 15, &v)) {}
+            else break;
+            if (v >= 0 && v <= 15)
+                ctx->plain[blk + g->p_style_off] = (u8)((v << 4) & 0xF0);
+            break;
+        }
+        case 1: if (!delta || delta == 1 || delta == -1) ctx->plain[blk + g->p_invoke_off] ^= 8; break;
+        case 2: if (!delta || delta == 1 || delta == -1) ctx->plain[blk + g->p_invoke_off] ^= 16; break;
+        case 5: if (!delta || delta == 1 || delta == -1) ctx->plain[blk + g->p_invoke_off] = !ctx->plain[blk + g->p_invoke_off]; break;
+        case 6: if (!delta || delta == 1 || delta == -1) ctx->plain[blk + g->p_key_off] = !ctx->plain[blk + g->p_key_off]; break;
+        case 3:
+            v = rd16(ctx, blk + g->p_part_off) + delta;
+            if (delta == 1 || delta == -1) { if (v >= 0 && v <= 9999) wr16(ctx, blk + g->p_part_off, (s16)v); }
+            else if (!delta && ui_number("Participation", rd16(ctx, blk + g->p_part_off), 0, 9999, &v))
+                wr16(ctx, blk + g->p_part_off, (s16)v);
+            break;
+        case 4:
+            v = rd16(ctx, blk + g->p_part_off + 2) + delta;
+            if (delta == 1 || delta == -1) { if (v >= 0 && v <= 9999) wr16(ctx, blk + g->p_part_off + 2, (s16)v); }
+            else if (!delta && ui_number("Goals scored", rd16(ctx, blk + g->p_part_off + 2), 0, 9999, &v))
+                wr16(ctx, blk + g->p_part_off + 2, (s16)v);
+            break;
+        }
+    }
+}
+
+
+/* ---- player bank (sd:/IESM/players) ---- */
+
+#define PLAYERS_DIR "/IESM/players"
+
+typedef struct {
+    char magic[4];   /* "IEPL" */
+    u8 ver, pad;
+    u16 game_magic;
+    u32 id;
+    u8 level, pad2;
+    s16 gp, tp, freedom;
+    s16 invested[8];
+    u8 moves[72];
+    u32 avatar_id;
+    u8 av_level, av_usage, pad3[2];
+    u32 totem_id;
+} PlayerBankFile;
+
+static void player_bank_store(SaveCtx *ctx, u32 blk, const PlayerInfo *pi)
+{
+    const GameDef *g = ctx->game;
+    PlayerBankFile f;
+    memset(&f, 0, sizeof(f));
+    memcpy(f.magic, "IEPL", 4);
+    f.ver = 1;
+    f.game_magic = g->magic;
+    memcpy(&f.id, ctx->plain + blk + g->p_id_off, 4);
+    f.level = ctx->plain[blk + g->p_gp_off + 6];
+    f.gp = rd16(ctx, blk + g->p_gp_off);
+    f.tp = rd16(ctx, blk + g->p_gp_off + 2);
+    f.freedom = rd16(ctx, blk + g->p_gp_off + 4);
+    for (int i = 0; i < 8; i++) f.invested[i] = rd16(ctx, blk + g->p_invest_off + i * 2);
+    memcpy(f.moves, ctx->plain + blk + g->p_moves_off, 72);
+    memcpy(&f.avatar_id, ctx->plain + blk + g->p_avatar_off, 4);
+    f.av_level = ctx->plain[blk + g->p_avatar_off + 4];
+    f.av_usage = ctx->plain[blk + g->p_avatar_off + 5];
+    if (g->totem_off) f.totem_id = (u32)rd32(ctx, blk);
+
+    char def[40];
+    snprintf(def, sizeof(def), "%.24s-L%d", pi ? pi->name : "player", f.level);
+    for (char *p = def; *p; p++) if (*p == ' ') *p = '_';
+    char name[40];
+    if (!ui_text("Bank entry name", def, name, sizeof(name))) return;
+    mkdir(PLAYERS_DIR, 0777);
+    char path[0x300];
+    snprintf(path, sizeof(path), PLAYERS_DIR "/%s.iep", name);
+    FILE *out = fopen(path, "wb");
+    bool ok = out && fwrite(&f, 1, sizeof(f), out) == sizeof(f);
+    if (out) fclose(out);
+    if (ok) logline("player banked: sd:%s", path);
+    ui_header();
+    ui_notice(ok ? "Player saved to the bank." : "Bank write FAILED.", ok);
+}
+
+/* import as a new roster member; returns true if added */
+static bool player_bank_import(SaveCtx *ctx, const PlayerBankFile *f, int count)
+{
+    const GameDef *g = ctx->game;
+    if (count >= g->pmax) {
+        ui_header();
+        ui_notice("Roster is full.", false);
+        return false;
+    }
+    u32 blk = g->pdata_off + (u32)count * g->pblock;
+    int idx = next_player_index(ctx, count);
+    memset(ctx->plain + blk, 0, (size_t)g->pblock);
+    wr32(ctx, blk + g->p_id_off - 4, idx);
+    memcpy(ctx->plain + blk + g->p_id_off, &f->id, 4);
+    ctx->plain[blk + g->p_gp_off + 6] = f->level;
+    wr16(ctx, blk + g->p_gp_off, f->gp);
+    wr16(ctx, blk + g->p_gp_off + 2, f->tp);
+    wr16(ctx, blk + g->p_gp_off + 4, f->freedom);
+    for (int i = 0; i < 8; i++) wr16(ctx, blk + g->p_invest_off + i * 2, f->invested[i]);
+    memcpy(ctx->plain + blk + g->p_moves_off, f->moves, 72);
+    memcpy(ctx->plain + blk + g->p_avatar_off, &f->avatar_id, 4);
+    ctx->plain[blk + g->p_avatar_off + 4] = f->av_level;
+    ctx->plain[blk + g->p_avatar_off + 5] = f->av_usage;
+    if (g->totem_off) wr32(ctx, blk, (s32)f->totem_id);
+    for (int i = 0; i < g->pmax; i++)
+        if (rd32(ctx, g->pindex_off + (u32)i * 4) == 0) {
+            wr32(ctx, g->pindex_off + (u32)i * 4, idx);
+            break;
+        }
+    return true;
+}
+
+/* returns number of players added */
+static int player_bank_browser(SaveCtx *ctx, int count)
+{
+    mkdir(PLAYERS_DIR, 0777);
+    int added = 0, cursor = 0;
+    while (aptMainLoop()) {
+        static char names[64][48];
+        int n = 0;
+        DIR *d = opendir(PLAYERS_DIR);
+        if (d) {
+            struct dirent *e;
+            while ((e = readdir(d)) && n < 64) {
+                size_t l = strlen(e->d_name);
+                if (l > 4 && l < 48 && !strcmp(e->d_name + l - 4, ".iep"))
+                    snprintf(names[n++], 48, "%s", e->d_name);
+            }
+            closedir(d);
+        }
+        if (!n) {
+            ui_header();
+            ui_notice("Bank empty. In a player's screen,\nuse [ Store in player bank ].", false);
+            return added;
+        }
+        const char *lines[64];
+        for (int i = 0; i < n; i++) lines[i] = names[i];
+        int pick = ui_list("Player bank", lines, n, cursor);
+        if (pick < 0) return added;
+        cursor = pick;
+
+        char path[0x300];
+        snprintf(path, sizeof(path), PLAYERS_DIR "/%s", names[pick]);
+        PlayerBankFile f;
+        FILE *in = fopen(path, "rb");
+        bool ok = in && fread(&f, 1, sizeof(f), in) == sizeof(f) && !memcmp(f.magic, "IEPL", 4);
+        if (in) fclose(in);
+        if (!ok) {
+            ui_header();
+            ui_notice("Unreadable bank file.", false);
+            continue;
+        }
+
+        const char *acts[] = { "Import into this save", "Delete", "Back" };
+        int a = ui_list(names[pick], acts, 3, 0);
+        if (a == 0) {
+            if (f.game_magic != ctx->game->magic) {
+                ui_header();
+                ui_notice("Refused: player from another game.", false);
+                continue;
+            }
+            if (player_bank_import(ctx, &f, count + added)) {
+                added++;
+                ui_header();
+                ui_notice("Player imported.", true);
+            }
+        } else if (a == 1) {
+            char msg[96];
+            snprintf(msg, sizeof(msg), "Delete %.32s permanently?", names[pick]);
+            if (ui_dialog("delete", msg, true)) remove(path);
+        }
+    }
+    return added;
 }
 
 static void god_mode(SaveCtx *ctx, u32 blk, const char *pname)
@@ -717,7 +1035,7 @@ static void edit_player(SaveCtx *ctx, u32 blk, const PlayerInfo *pi)
         int budget = freedom + inv_sum;
         int level = ctx->plain[blk + gp + 6];
 
-        char rows[17][48];
+        char rows[20][48];
         snprintf(rows[0], 48, "Level      %d", level);
         snprintf(rows[1], 48, "GP         %d", rd16(ctx, blk + gp));
         snprintf(rows[2], 48, "TP         %d", rd16(ctx, blk + gp + 2));
@@ -731,14 +1049,17 @@ static void edit_player(SaveCtx *ctx, u32 blk, const PlayerInfo *pi)
         snprintf(rows[14], 48, "[ Replace with another player ]");
         snprintf(rows[15], 48, "[ Moves ]");
         snprintf(rows[16], 48, "[ Avatar ]");
-        const char *lines[17];
-        for (int i = 0; i < 17; i++) lines[i] = rows[i];
+        snprintf(rows[17], 48, "[ Equipment ]");
+        snprintf(rows[18], 48, "[ Flags & counters ]");
+        snprintf(rows[19], 48, "[ Store in player bank ]");
+        const char *lines[20];
+        for (int i = 0; i < 20; i++) lines[i] = rows[i];
 
         char ptitle[48];
         snprintf(ptitle, sizeof(ptitle), "%s%s", pi->name,
                  (level < 99) ? " (bases = Lv99 values)" : "");
         int delta = 0;
-        int pick = ui_list_adj(ptitle, lines, 17, cursor, &delta);
+        int pick = ui_list_adj(ptitle, lines, 20, cursor, &delta);
         if (pick < 0) return;
         cursor = pick;
 
@@ -833,6 +1154,12 @@ static void edit_player(SaveCtx *ctx, u32 blk, const PlayerInfo *pi)
             moves_editor(ctx, blk, pi->name);
         } else if (pick == 16) {
             avatar_editor(ctx, blk, pi->name);
+        } else if (pick == 17) {
+            equipment_editor(ctx, blk, pi->name);
+        } else if (pick == 18) {
+            flags_editor(ctx, blk, pi->name);
+        } else if (pick == 19) {
+            player_bank_store(ctx, blk, pi);
         }
     }
 }
@@ -869,11 +1196,13 @@ void player_editor(SaveCtx *ctx)
     memcpy(snap + region, ctx->plain + g->pindex_off, iregion);
 
     while (aptMainLoop()) {
-        int n = 2;
+        int n = 3;
         snprintf(labels[0], 48, "[ Set ALL players to Lv 99 ]");
         lines[0] = labels[0];
         snprintf(labels[1], 48, "[ Recruit player ]  (%d/%d)", count, g->pmax);
         lines[1] = labels[1];
+        snprintf(labels[2], 48, "[ Player bank ]");
+        lines[2] = labels[2];
         for (int i = 0; i < count && i < g->pmax; i++) {
             u32 blk = g->pdata_off + (u32)i * g->pblock;
             u32 id;
@@ -892,13 +1221,29 @@ void player_editor(SaveCtx *ctx)
             n++;
         }
 
-        int pick = ui_list("Players (B: back)", lines, n, cursor);
+        int delta = 0;
+        int pick = ui_list_adj("Players (X: dismiss)", lines, n, cursor, &delta);
         if (pick < 0) break;
         cursor = pick;
+        if (delta == 2 && pick >= 3) {
+            u32 id;
+            memcpy(&id, ctx->plain + blocks[pick] + g->p_id_off, 4);
+            const PlayerInfo *pi = player_info(g, id);
+            char msg[96];
+            snprintf(msg, sizeof(msg), "Dismiss %.24s from the save?\n\nTeam slots using them are cleared.",
+                     pi ? pi->name : "this player");
+            if (ui_dialog("dismiss", msg, true)) {
+                dismiss_player(ctx, (int)((blocks[pick] - g->pdata_off) / g->pblock), count);
+                count--;
+                if (cursor >= n - 1) cursor = n - 2;
+            }
+            continue;
+        }
+        if (delta) continue;
 
         if (pick == 0) {
             if (ui_dialog("set all Lv 99", "Set every player to level 99?\n\nGP/TP are raised to each player's\nbase maximum.", false))
-                for (int i = 2; i < n; i++) {
+                for (int i = 3; i < n; i++) {
                     u32 id;
                     memcpy(&id, ctx->plain + blocks[i] + g->p_id_off, 4);
                     level_gp_tp(ctx, blocks[i], player_info(g, id), 99);
@@ -927,6 +1272,10 @@ void player_editor(SaveCtx *ctx)
             char rmsg[64];
             snprintf(rmsg, sizeof(rmsg), "Recruited %.24s at Lv 1.", np->name);
             ui_notice(rmsg, true);
+            continue;
+        }
+        if (pick == 2) {
+            count += player_bank_browser(ctx, count);
             continue;
         }
         u32 id;
@@ -1347,6 +1696,37 @@ void inventory_editor(SaveCtx *ctx)
     free(snap);
 }
 
+
+
+/* remove player at contiguous block position k; compacts blocks and the
+ * roster index table, and clears team roster references */
+static void dismiss_player(SaveCtx *ctx, int k, int count)
+{
+    const GameDef *g = ctx->game;
+    u32 blk = g->pdata_off + (u32)k * g->pblock;
+    int ridx = rd32(ctx, blk + g->p_id_off - 4);
+
+    memmove(ctx->plain + blk, ctx->plain + blk + g->pblock,
+            (size_t)(count - 1 - k) * g->pblock);
+    memset(ctx->plain + g->pdata_off + (u32)(count - 1) * g->pblock, 0, (size_t)g->pblock);
+
+    /* index table: drop the entry, keep order, zero the tail */
+    int w = 0;
+    for (int i = 0; i < g->pmax; i++) {
+        int v = rd32(ctx, g->pindex_off + (u32)i * 4);
+        if (v == 0 || v == ridx) continue;
+        wr32(ctx, g->pindex_off + (u32)w * 4, v);
+        w++;
+    }
+    for (; w < g->pmax; w++) wr32(ctx, g->pindex_off + (u32)w * 4, 0);
+
+    /* clear from custom teams */
+    for (int t = 0; t < g->t_count; t++)
+        for (int s = 0; s < 16; s++) {
+            u32 off = g->t_players + (u32)t * 0x40 + (u32)s * 4;
+            if (rd32(ctx, off) == ridx) wr32(ctx, off, 0);
+        }
+}
 
 /* ---- teams / tactics ---- */
 
