@@ -123,13 +123,14 @@ int ui_list_adj(const char *title, const char *const *lines, int n, int cursor, 
             printf(C_KEY " %s " C_RESET "(%d/%d)\n\n", title, cursor + 1, n);
             for (int i = top; i < top + LIST_ROWS && i < n; i++)
                 printf(" %s %-46.46s " C_RESET "\n", (i == cursor) ? C_SEL : " ", lines[i]);
-            printf("\x1b[28;1H" C_DIM " LEFT/RIGHT adjust  A keyboard  L/R page  B back" C_RESET);
+            printf("\x1b[28;1H" C_DIM " L/R adjust A keyboard X action L/R-btn page B back" C_RESET);
             dirty = false;
         }
         hidScanInput();
         u32 k = hidKeysDown();
         u32 kr = hidKeysDownRepeat();
         if (k & KEY_A) { *delta = 0; return cursor; }
+        if (k & KEY_X) { *delta = 2; return cursor; }
         if (k & (KEY_B | KEY_START)) return -1;
         if (kr & KEY_UP)    { cursor = (cursor + n - 1) % n; dirty = true; }
         if (kr & KEY_DOWN)  { cursor = (cursor + 1) % n; dirty = true; }
@@ -142,4 +143,14 @@ int ui_list_adj(const char *title, const char *const *lines, int n, int cursor, 
         gspWaitForVBlank();
     }
     return -1;
+}
+
+bool ui_text_opt(const char *hint, char *out, size_t outsz)
+{
+    SwkbdState kb;
+    swkbdInit(&kb, SWKBD_TYPE_QWERTY, 2, outsz - 1);
+    swkbdSetHintText(&kb, hint);
+    out[0] = 0;
+    if (swkbdInputText(&kb, out, outsz) != SWKBD_BUTTON_RIGHT) return false;
+    return true;
 }

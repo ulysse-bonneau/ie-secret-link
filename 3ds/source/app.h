@@ -6,7 +6,7 @@
 #include "players_db.h"
 #include "items_db.h"
 
-#define VERSION "v0.8.3"
+#define VERSION "v0.9.0"
 
 #define BACKUP_DIR     "/IESM"
 #define OLD_BACKUP_DIR "/ie-secret-link"
@@ -31,6 +31,7 @@ typedef struct {
     u32 pdata_off, pindex_off;
     int pmax, pblock;      /* block stride; 0 = players unsupported */
     u32 p_id_off, p_gp_off, p_invest_off; /* TP = gp+2, Freedom = gp+4, Level = gp+6 */
+    u32 p_moves_off;       /* 6 x 12-byte MoveBlock inside the player block */
     const PlayerInfo *db;
     int db_count;
     /* inventory: group1 (idx,id,qty = 12 B), group2 (idx,id,qty,equipped = 16 B) */
@@ -75,6 +76,7 @@ void ui_notice(const char *text, bool ok);
 int  ui_list(const char *title, const char *const *lines, int n, int cursor);
 int  ui_list_adj(const char *title, const char *const *lines, int n, int cursor, int *delta);
 bool ui_text(const char *hint, const char *initial, char *out, size_t outsz);
+bool ui_text_opt(const char *hint, char *out, size_t outsz); /* empty allowed */
 bool ui_number(const char *hint, int initial, int min, int max, int *out);
 
 #define C_RESET  "\x1b[0m"

@@ -330,6 +330,79 @@ static bool train_plus(SaveCtx *ctx, u32 blk, const PlayerInfo *pi, int i)
     return true;
 }
 
+
+/* write a fresh player block: DB defaults, chosen level, given roster index */
+static void write_player_block(SaveCtx *ctx, u32 blk, const PlayerInfo *pi,
+                               int level, int index)
+{
+    const GameDef *g = ctx->game;
+    memset(ctx->plain + blk, 0, (size_t)g->pblock);
+    wr32(ctx, blk + g->p_id_off - 4, index);
+    memcpy(ctx->plain + blk + g->p_id_off, &pi->id, 4);
+    wr16(ctx, blk + g->p_gp_off + 4, (s16)pi->freedom);
+    level_gp_tp(ctx, blk, pi, level);
+    for (int m = 0; m < 4; m++) {
+        u32 e = blk + g->p_moves_off + (u32)m * 12;
+        memcpy(ctx->plain + e, &pi->moves[m], 4);
+        ctx->plain[e + 4] = 1;   /* move level */
+        ctx->plain[e + 6] = 1;   /* learned (4-byte bool, LE) */
+    }
+}
+
+/* next roster index following the PC editor's scheme: both 16-bit halves
+ * of the last index are incremented until unique */
+static int next_player_index(SaveCtx *ctx, int count)
+{
+    const GameDef *g = ctx->game;
+    int idx = rd32(ctx, g->pdata_off + (u32)(count - 1) * g->pblock + g->p_id_off - 4);
+    bool taken = true;
+    while (taken) {
+        s16 lo = (s16)(idx & 0xFFFF), hi = (s16)((idx >> 16) & 0xFFFF);
+        lo++; hi++;
+        idx = (int)(u16)lo | ((int)(u16)hi << 16);
+        taken = false;
+        for (int i = 0; i < count; i++)
+            if (rd32(ctx, g->pdata_off + (u32)i * g->pblock + g->p_id_off - 4) == idx)
+                taken = true;
+    }
+    return idx;
+}
+
+static const PlayerInfo *player_db_picker(SaveCtx *ctx, bool skip_owned)
+{
+    const GameDef *g = ctx->game;
+    char filt[24];
+    if (!ui_text_opt("Filter (empty = all)", filt, sizeof(filt))) return NULL;
+    static const PlayerInfo *found[PICK_MAX];
+    static char plabels[PICK_MAX][40];
+    const char *lines[PICK_MAX];
+    int n = 0;
+    for (int i = 0; i < g->db_count && n < PICK_MAX; i++) {
+        const PlayerInfo *pi = &g->db[i];
+        if (!name_match(pi->name, filt)) continue;
+        if (skip_owned) {
+            bool owned = false;
+            for (int k = 0; k < g->pmax && !owned; k++) {
+                u32 id;
+                memcpy(&id, ctx->plain + g->pdata_off + (u32)k * g->pblock + g->p_id_off, 4);
+                if (id == pi->id) owned = true;
+            }
+            if (owned) continue;
+        }
+        found[n] = pi;
+        snprintf(plabels[n], 40, "%-2s %-4s %s", pi->pos, pi->elem, pi->name);
+        lines[n] = plabels[n];
+        n++;
+    }
+    if (!n) {
+        ui_header();
+        ui_notice("No matching player.", false);
+        return NULL;
+    }
+    int pick = ui_list("Pick a player", lines, n, 0);
+    return (pick < 0) ? NULL : found[pick];
+}
+
 static void god_mode(SaveCtx *ctx, u32 blk, const char *pname)
 {
     const GameDef *g = ctx->game;
@@ -402,7 +475,7 @@ static void edit_player(SaveCtx *ctx, u32 blk, const PlayerInfo *pi)
         int budget = freedom + inv_sum;
         int level = ctx->plain[blk + gp + 6];
 
-        char rows[14][48];
+        char rows[15][48];
         snprintf(rows[0], 48, "Level      %-4d (GP/TP exact at 99 only)", level);
         snprintf(rows[1], 48, "GP         %d", rd16(ctx, blk + gp));
         snprintf(rows[2], 48, "TP         %d", rd16(ctx, blk + gp + 2));
@@ -413,11 +486,12 @@ static void edit_player(SaveCtx *ctx, u32 blk, const PlayerInfo *pi)
         }
         snprintf(rows[12], 48, "[ God mode (free edit) ]");
         snprintf(rows[13], 48, "[ Reset freedom & invested points ]");
-        const char *lines[14];
-        for (int i = 0; i < 14; i++) lines[i] = rows[i];
+        snprintf(rows[14], 48, "[ Replace with another player ]");
+        const char *lines[15];
+        for (int i = 0; i < 15; i++) lines[i] = rows[i];
 
         int delta = 0;
-        int pick = ui_list_adj(pi->name, lines, 14, cursor, &delta);
+        int pick = ui_list_adj(pi->name, lines, 15, cursor, &delta);
         if (pick < 0) return;
         cursor = pick;
 
@@ -498,6 +572,16 @@ static void edit_player(SaveCtx *ctx, u32 blk, const PlayerInfo *pi)
                 for (int i = 0; i < 8; i++)
                     wr16(ctx, blk + g->p_invest_off + i * 2, 0);
             }
+        } else if (pick == 14) {
+            const PlayerInfo *np = player_db_picker(ctx, false);
+            if (!np) continue;
+            char msg[128];
+            snprintf(msg, sizeof(msg), "Replace %s with %s?\n\nLevel kept; moves, avatar, equipment\nand training are reset.",
+                     pi->name, np->name);
+            if (!ui_dialog("replace", msg, false)) continue;
+            int idx = rd32(ctx, blk + g->p_id_off - 4);
+            write_player_block(ctx, blk, np, level, idx);
+            return;
         }
     }
 }
@@ -528,13 +612,17 @@ void player_editor(SaveCtx *ctx)
     int cursor = 0;
 
     u32 region = (u32)g->pmax * g->pblock;
-    u8 *snap = malloc(region);
+    u32 iregion = (u32)g->pmax * 4;
+    u8 *snap = malloc(region + iregion);
     memcpy(snap, ctx->plain + g->pdata_off, region);
+    memcpy(snap + region, ctx->plain + g->pindex_off, iregion);
 
     while (aptMainLoop()) {
-        int n = 1;
+        int n = 2;
         snprintf(labels[0], 48, "[ Set ALL players to Lv 99 ]");
         lines[0] = labels[0];
+        snprintf(labels[1], 48, "[ Recruit player ]  (%d/%d)", count, g->pmax);
+        lines[1] = labels[1];
         for (int i = 0; i < count && i < g->pmax; i++) {
             u32 blk = g->pdata_off + (u32)i * g->pblock;
             u32 id;
@@ -542,6 +630,7 @@ void player_editor(SaveCtx *ctx)
             if (!id) continue;
             const PlayerInfo *pi = player_info(g, id);
             blocks[n] = blk;
+            (void)0;
             if (pi)
                 snprintf(labels[n], 48, "L%-3d %-2s %-4s %s",
                          ctx->plain[blk + g->p_gp_off + 6], pi->pos, pi->elem, pi->name);
@@ -558,11 +647,33 @@ void player_editor(SaveCtx *ctx)
 
         if (pick == 0) {
             if (ui_dialog("set all Lv 99", "Set every player to level 99?\n\nGP/TP are raised to each player's\nbase maximum.", false))
-                for (int i = 1; i < n; i++) {
+                for (int i = 2; i < n; i++) {
                     u32 id;
                     memcpy(&id, ctx->plain + blocks[i] + g->p_id_off, 4);
                     level_gp_tp(ctx, blocks[i], player_info(g, id), 99);
                 }
+            continue;
+        }
+        if (pick == 1) {
+            if (count >= g->pmax) {
+                ui_header();
+                ui_notice("Roster is full.", false);
+                continue;
+            }
+            const PlayerInfo *np = player_db_picker(ctx, true);
+            if (!np) continue;
+            int lvl = 1;
+            if (!ui_number("Recruit at level (1-99)", 1, 1, 99, &lvl)) continue;
+            u32 blk = g->pdata_off + (u32)count * g->pblock;
+            int idx = next_player_index(ctx, count);
+            write_player_block(ctx, blk, np, lvl, idx);
+            /* roster order lives in the index table: append at the first free slot */
+            for (int i = 0; i < g->pmax; i++)
+                if (rd32(ctx, g->pindex_off + (u32)i * 4) == 0) {
+                    wr32(ctx, g->pindex_off + (u32)i * 4, idx);
+                    break;
+                }
+            count++;
             continue;
         }
         u32 id;
@@ -570,13 +681,17 @@ void player_editor(SaveCtx *ctx)
         edit_player(ctx, blocks[pick], player_info(g, id));
     }
 
-    if (memcmp(snap, ctx->plain + g->pdata_off, region) != 0) {
+    if (memcmp(snap, ctx->plain + g->pdata_off, region) != 0 ||
+        memcmp(snap + region, ctx->plain + g->pindex_off, iregion) != 0) {
         if (ui_dialog("save changes", "Commit player changes?", false)) {
             ui_header();
-            if (!apply_changes(ctx))
+            if (!apply_changes(ctx)) {
                 memcpy(ctx->plain + g->pdata_off, snap, region);
+                memcpy(ctx->plain + g->pindex_off, snap + region, iregion);
+            }
         } else {
             memcpy(ctx->plain + g->pdata_off, snap, region);
+            memcpy(ctx->plain + g->pindex_off, snap + region, iregion);
         }
     }
     free(snap);
@@ -595,6 +710,121 @@ static const ItemInfo *item_info(const GameDef *g, u32 id)
     return NULL;
 }
 
+
+static bool name_match(const char *name, const char *filt)
+{
+    if (!filt[0]) return true;
+    size_t fl = strlen(filt);
+    for (const char *p = name; *p; p++) {
+        size_t i = 0;
+        while (i < fl && p[i] &&
+               ((p[i] | 0x20) == (filt[i] | 0x20))) i++;
+        if (i == fl) return true;
+    }
+    return false;
+}
+
+/* highest inventory index across all three groups */
+static int max_item_index(SaveCtx *ctx)
+{
+    const GameDef *g = ctx->game;
+    int mx = 0;
+    for (int grp = 0; grp < 3; grp++) {
+        u32 base = (grp == 0) ? g->g1_off : (grp == 1) ? g->g2_off : g->g3_off;
+        u32 stride = (grp == 0) ? 12 : (grp == 1) ? 16 : 8;
+        int cnt = (grp == 0) ? g->g1_n : (grp == 1) ? g->g2_n : g->g3_n;
+        for (int i = 0; i < cnt; i++) {
+            u32 id;
+            memcpy(&id, ctx->plain + base + (u32)i * stride + 4, 4);
+            if (!id) continue;
+            int idx = rd32(ctx, base + (u32)i * stride);
+            if (idx > mx) mx = idx;
+        }
+    }
+    return mx;
+}
+
+static bool item_owned(SaveCtx *ctx, u32 id)
+{
+    const GameDef *g = ctx->game;
+    for (int grp = 0; grp < 3; grp++) {
+        u32 base = (grp == 0) ? g->g1_off : (grp == 1) ? g->g2_off : g->g3_off;
+        u32 stride = (grp == 0) ? 12 : (grp == 1) ? 16 : 8;
+        int cnt = (grp == 0) ? g->g1_n : (grp == 1) ? g->g2_n : g->g3_n;
+        for (int i = 0; i < cnt; i++) {
+            u32 v;
+            memcpy(&v, ctx->plain + base + (u32)i * stride + 4, 4);
+            if (v == id) return true;
+        }
+    }
+    return false;
+}
+
+/* add an item to the group matching its category; returns false if full */
+static bool item_add(SaveCtx *ctx, const ItemInfo *ii, int qty)
+{
+    const GameDef *g = ctx->game;
+    int grp = (ii->cat == 1) ? 0 : (ii->cat == 2) ? 1 : 2;
+    u32 base = (grp == 0) ? g->g1_off : (grp == 1) ? g->g2_off : g->g3_off;
+    u32 stride = (grp == 0) ? 12 : (grp == 1) ? 16 : 8;
+    int cnt = (grp == 0) ? g->g1_n : (grp == 1) ? g->g2_n : g->g3_n;
+    for (int i = 0; i < cnt; i++) {
+        u32 e = base + (u32)i * stride;
+        u32 id;
+        memcpy(&id, ctx->plain + e + 4, 4);
+        if (id) continue;
+        wr32(ctx, e, max_item_index(ctx) + 1);
+        memcpy(ctx->plain + e + 4, &ii->id, 4);
+        if (grp != 2) wr32(ctx, e + 8, qty);
+        if (grp == 1) wr32(ctx, e + 12, 0);
+        return true;
+    }
+    return false;
+}
+
+/* remove entry k of a group and compact the array like the PC editor does */
+static void item_remove(SaveCtx *ctx, int grp, int k)
+{
+    const GameDef *g = ctx->game;
+    u32 base = (grp == 0) ? g->g1_off : (grp == 1) ? g->g2_off : g->g3_off;
+    u32 stride = (grp == 0) ? 12 : (grp == 1) ? 16 : 8;
+    int cnt = (grp == 0) ? g->g1_n : (grp == 1) ? g->g2_n : g->g3_n;
+    memmove(ctx->plain + base + (u32)k * stride,
+            ctx->plain + base + (u32)(k + 1) * stride,
+            (size_t)(cnt - 1 - k) * stride);
+    memset(ctx->plain + base + (u32)(cnt - 1) * stride, 0, stride);
+}
+
+#define PICK_MAX 900
+
+/* filtered picker over the item DB restricted to one subcategory;
+ * returns the picked ItemInfo or NULL */
+static const ItemInfo *item_db_picker(SaveCtx *ctx, int sub)
+{
+    const GameDef *g = ctx->game;
+    char filt[24];
+    if (!ui_text_opt("Filter (empty = all)", filt, sizeof(filt))) return NULL;
+    static const ItemInfo *found[PICK_MAX];
+    const char *lines[PICK_MAX];
+    int n = 0;
+    for (int i = 0; i < g->idb_count && n < PICK_MAX; i++) {
+        const ItemInfo *ii = &g->idb[i];
+        if (ii->sub != sub) continue;
+        if (item_owned(ctx, ii->id)) continue;
+        if (!name_match(ii->name, filt)) continue;
+        found[n] = ii;
+        lines[n] = ii->name;
+        n++;
+    }
+    if (!n) {
+        ui_header();
+        ui_notice("No matching unowned item.", false);
+        return NULL;
+    }
+    int pick = ui_list("Add item", lines, n, 0);
+    return (pick < 0) ? NULL : found[pick];
+}
+
 #define MAX_ITEMS 1100
 
 static const char *SUBCAT_NAMES[24] = {
@@ -609,12 +839,17 @@ static void inventory_items(SaveCtx *ctx, int sub)
     const GameDef *g = ctx->game;
     static u32 qty_offs[MAX_ITEMS];
     static u32 eq_offs[MAX_ITEMS];   /* 0 = no equipped counter (group 1) */
+    static u16 slot_grp[MAX_ITEMS], slot_i[MAX_ITEMS];
     static char labels[MAX_ITEMS][48];
     const char *lines[MAX_ITEMS];
     int cursor = 0;
 
     while (aptMainLoop()) {
-        int n = 0;
+        int n = 1;
+        snprintf(labels[0], 48, "[ Add item ]");
+        lines[0] = labels[0];
+        qty_offs[0] = 0;
+        eq_offs[0] = 0;
         for (int grp = 0; grp < 3; grp++) {
             u32 base = (grp == 0) ? g->g1_off : (grp == 1) ? g->g2_off : g->g3_off;
             u32 stride = (grp == 0) ? 12 : (grp == 1) ? 16 : 8;
@@ -626,6 +861,8 @@ static void inventory_items(SaveCtx *ctx, int sub)
                 if (!id) continue;
                 const ItemInfo *ii = item_info(g, id);
                 if (!ii || ii->sub != sub) continue;
+                slot_grp[n] = (u16)grp;
+                slot_i[n] = (u16)i;
                 if (grp == 2) {
                     qty_offs[n] = 0;
                     eq_offs[n] = 0;
@@ -647,12 +884,28 @@ static void inventory_items(SaveCtx *ctx, int sub)
                 n++;
             }
         }
-        if (!n) return;
-
         int delta = 0;
         int pick = ui_list_adj(SUBCAT_NAMES[(sub >= 0 && sub < 24) ? sub : 0], lines, n, cursor, &delta);
         if (pick < 0) return;
         cursor = pick;
+        if (pick == 0) {
+            if (delta) continue;
+            const ItemInfo *ii = item_db_picker(ctx, sub);
+            if (!ii) continue;
+            int q = 1;
+            if (ii->cat != 3 && !ui_number("Quantity", 1, 1, 99, &q)) continue;
+            ui_header();
+            ui_notice(item_add(ctx, ii, q) ? "Item added." : "No free slot in this group.",
+                      true);
+            continue;
+        }
+        if (delta == 2) {
+            char msg[96];
+            snprintf(msg, sizeof(msg), "Remove this item from the save?\n\n%.40s", lines[pick] + 4);
+            if (ui_dialog("remove", msg, true))
+                item_remove(ctx, slot_grp[pick], slot_i[pick]);
+            continue;
+        }
         if (!qty_offs[pick]) {
             if (!delta) {
                 ui_header();
