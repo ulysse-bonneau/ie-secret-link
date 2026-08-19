@@ -6,7 +6,7 @@
 #include "players_db.h"
 #include "items_db.h"
 
-#define VERSION "v0.7.0"
+#define VERSION "v0.8.0"
 
 #define BACKUP_DIR     "/IESM"
 #define OLD_BACKUP_DIR "/ie-secret-link"
@@ -73,6 +73,7 @@ void ui_header(void);
 bool ui_dialog(const char *yes, const char *text, bool warn);
 void ui_notice(const char *text, bool ok);
 int  ui_list(const char *title, const char *const *lines, int n, int cursor);
+int  ui_list_adj(const char *title, const char *const *lines, int n, int cursor, int *delta);
 bool ui_text(const char *hint, const char *initial, char *out, size_t outsz);
 bool ui_number(const char *hint, int initial, int min, int max, int *out);
 

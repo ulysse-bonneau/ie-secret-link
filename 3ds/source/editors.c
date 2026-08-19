@@ -237,12 +237,58 @@ static void level_gp_tp(SaveCtx *ctx, u32 blk, const PlayerInfo *pi, int level)
     const GameDef *g = ctx->game;
     ctx->plain[blk + g->p_gp_off + 6] = (u8)level;
     if (pi && pi->gp) {
-        /* ponytail: linear growth approximation, exact at level 99 */
-        int gp = pi->gp * level / 99; if (gp < 1) gp = 1;
-        int tp = pi->tp * level / 99; if (tp < 1) tp = 1;
-        wr16(ctx, blk + g->p_gp_off, (s16)gp);
-        wr16(ctx, blk + g->p_gp_off + 2, (s16)tp);
+        /* linear growth approximation (exact at 99); never lowers stored values,
+         * since real in-game growth outpaces the linear curve */
+        int gp = pi->gp * level / 99;
+        int tp = pi->tp * level / 99;
+        if (gp > rd16(ctx, blk + g->p_gp_off)) wr16(ctx, blk + g->p_gp_off, (s16)gp);
+        if (tp > rd16(ctx, blk + g->p_gp_off + 2)) wr16(ctx, blk + g->p_gp_off + 2, (s16)tp);
     }
+}
+
+/* seesaw pattern: which stat drops when training past freedom, per position.
+ * Stat order: Kick Dribble Technique Block Speed Stamina Catch Luck.
+ * -1 = pair unknown (falls back to a picker); fill in as pairs are confirmed
+ * in-game and report them so the table can be completed. */
+static const signed char SEESAW[4][8] = {
+    /* GK */ { -1, -1, -1, -1, -1, -1, -1, -1 },
+    /* DF */ { -1, -1, -1, -1, -1, -1, -1, -1 },
+    /* MF */ { -1, -1, -1, -1, -1, -1, -1, -1 },
+    /* FW */ {  2, -1, -1, -1, -1, -1, -1, -1 }, /* Kick drains Technique */
+};
+
+static int pos_index(const PlayerInfo *pi)
+{
+    if (!strcmp(pi->pos, "GK")) return 0;
+    if (!strcmp(pi->pos, "DF")) return 1;
+    if (!strcmp(pi->pos, "MF")) return 2;
+    if (!strcmp(pi->pos, "FW")) return 3;
+    return -1;
+}
+
+/* +1 on stat i following game rules; returns false if cancelled */
+static bool train_plus(SaveCtx *ctx, u32 blk, const PlayerInfo *pi, int i)
+{
+    const GameDef *g = ctx->game;
+    int freedom = rd16(ctx, blk + g->p_gp_off + 4);
+    if (freedom > 0) {
+        wr16(ctx, blk + g->p_invest_off + i * 2, (s16)(rd16(ctx, blk + g->p_invest_off + i * 2) + 1));
+        wr16(ctx, blk + g->p_gp_off + 4, (s16)(freedom - 1));
+        return true;
+    }
+    int p = pos_index(pi);
+    int victim = (p >= 0) ? SEESAW[p][i] : -1;
+    if (victim < 0) {
+        /* pair unknown: let the user choose the stat to lower */
+        const char *lines[8];
+        for (int s = 0; s < 8; s++) lines[s] = STAT_NAMES[s];
+        int pick = ui_list("No freedom left: lower which stat?", lines, 8, (i + 1) % 8);
+        if (pick < 0 || pick == i) return false;
+        victim = pick;
+    }
+    wr16(ctx, blk + g->p_invest_off + i * 2, (s16)(rd16(ctx, blk + g->p_invest_off + i * 2) + 1));
+    wr16(ctx, blk + g->p_invest_off + victim * 2, (s16)(rd16(ctx, blk + g->p_invest_off + victim * 2) - 1));
+    return true;
 }
 
 static void god_mode(SaveCtx *ctx, u32 blk, const char *pname)
@@ -261,24 +307,37 @@ static void god_mode(SaveCtx *ctx, u32 blk, const char *pname)
         const char *lines[12];
         for (int i = 0; i < 12; i++) lines[i] = rows[i];
 
-        int pick = ui_list(pname, lines, 12, cursor);
+        int delta = 0;
+        int pick = ui_list_adj(pname, lines, 12, cursor, &delta);
         if (pick < 0) return;
         cursor = pick;
 
+        static const struct { u32 rel; int min, max; bool byte; } F[4] = {
+            { 6, 1, 99, true }, { 0, 1, 999, false }, { 2, 1, 999, false }, { 4, 0, 9999, false },
+        };
         int v;
-        if (pick == 0) {
-            if (ui_number("Level (1-99)", ctx->plain[blk + gp + 6], 1, 99, &v))
-                ctx->plain[blk + gp + 6] = (u8)v;
-        } else if (pick == 1) {
-            if (ui_number("GP", rd16(ctx, blk + gp), 1, 999, &v)) wr16(ctx, blk + gp, (s16)v);
-        } else if (pick == 2) {
-            if (ui_number("TP", rd16(ctx, blk + gp + 2), 1, 999, &v)) wr16(ctx, blk + gp + 2, (s16)v);
-        } else if (pick == 3) {
-            if (ui_number("Freedom points", rd16(ctx, blk + gp + 4), 0, 9999, &v)) wr16(ctx, blk + gp + 4, (s16)v);
+        if (pick < 4) {
+            u32 off = blk + gp + F[pick].rel;
+            int cur = F[pick].byte ? ctx->plain[off] : rd16(ctx, off);
+            if (delta) {
+                cur += delta;
+                if (cur < F[pick].min || cur > F[pick].max) continue;
+            } else {
+                static const char *hints[4] = { "Level (1-99)", "GP", "TP", "Freedom points" };
+                if (!ui_number(hints[pick], cur, F[pick].min, F[pick].max, &cur)) continue;
+            }
+            if (F[pick].byte) ctx->plain[off] = (u8)cur;
+            else wr16(ctx, off, (s16)cur);
         } else {
             int i = pick - 4;
-            if (ui_number(STAT_NAMES[i], rd16(ctx, blk + g->p_invest_off + i * 2), 0, 255, &v))
+            int cur = rd16(ctx, blk + g->p_invest_off + i * 2);
+            if (delta) {
+                cur += delta;
+                if (cur < -255 || cur > 255) continue;
+                wr16(ctx, blk + g->p_invest_off + i * 2, (s16)cur);
+            } else if (ui_number(STAT_NAMES[i], cur, 0, 255, &v)) {
                 wr16(ctx, blk + g->p_invest_off + i * 2, (s16)v);
+            }
         }
     }
 }
@@ -289,7 +348,6 @@ static void edit_player(SaveCtx *ctx, u32 blk, const PlayerInfo *pi)
     u32 gp = g->p_gp_off;
 
     if (!pi) {
-        /* unknown ID: no base data, free editing only */
         god_mode(ctx, blk, "Unknown player (god mode)");
         return;
     }
@@ -304,53 +362,75 @@ static void edit_player(SaveCtx *ctx, u32 blk, const PlayerInfo *pi)
         int freedom = rd16(ctx, blk + gp + 4);
         int budget = freedom + inv_sum;
 
-        char title[48];
-        snprintf(title, 48, "%s  GP %d TP %d", pi->name, rd16(ctx, blk + gp), rd16(ctx, blk + gp + 2));
-
-        char rows[12][48];
+        char rows[14][48];
         snprintf(rows[0], 48, "Level      %-4d (adjusts GP/TP)", ctx->plain[blk + gp + 6]);
-        snprintf(rows[1], 48, "Freedom left    %d", freedom);
+        snprintf(rows[1], 48, "GP         %d", rd16(ctx, blk + gp));
+        snprintf(rows[2], 48, "TP         %d", rd16(ctx, blk + gp + 2));
+        snprintf(rows[3], 48, "Freedom left    %d", freedom);
         for (int i = 0; i < 8; i++)
-            snprintf(rows[2 + i], 48, "%-9s %3d %+4d = %d", STAT_NAMES[i], pi->st[i], inv[i], pi->st[i] + inv[i]);
-        snprintf(rows[10], 48, "[ God mode (free edit) ]");
-        snprintf(rows[11], 48, "[ Reset freedom & invested points ]");
-        const char *lines[12];
-        for (int i = 0; i < 12; i++) lines[i] = rows[i];
+            snprintf(rows[4 + i], 48, "%-9s %3d %+4d = %d", STAT_NAMES[i], pi->st[i], inv[i], pi->st[i] + inv[i]);
+        snprintf(rows[12], 48, "[ God mode (free edit) ]");
+        snprintf(rows[13], 48, "[ Reset freedom & invested points ]");
+        const char *lines[14];
+        for (int i = 0; i < 14; i++) lines[i] = rows[i];
 
-        int pick = ui_list(title, lines, 12, cursor);
+        int delta = 0;
+        int pick = ui_list_adj(pi->name, lines, 14, cursor, &delta);
         if (pick < 0) return;
         cursor = pick;
 
         int v;
         if (pick == 0) {
-            if (ui_number("Level (1-99)", ctx->plain[blk + gp + 6], 1, 99, &v))
+            int lvl = ctx->plain[blk + gp + 6];
+            if (delta) {
+                lvl += delta;
+                if (lvl >= 1 && lvl <= 99) level_gp_tp(ctx, blk, pi, lvl);
+            } else if (ui_number("Level (1-99)", lvl, 1, 99, &v)) {
                 level_gp_tp(ctx, blk, pi, v);
-        } else if (pick == 1) {
+            }
+        } else if (pick == 1 || pick == 2) {
+            u32 off = blk + gp + (pick == 1 ? 0 : 2);
+            int cur = rd16(ctx, off);
+            if (delta) {
+                cur += delta;
+                if (cur >= 1 && cur <= 999) wr16(ctx, off, (s16)cur);
+            } else if (ui_number(pick == 1 ? "GP" : "TP", cur, 1, 999, &v)) {
+                wr16(ctx, off, (s16)v);
+            }
+        } else if (pick == 3) {
             ui_header();
             char msg[96];
             snprintf(msg, sizeof(msg), "Freedom left: %d (total budget %d).\nSpend it by raising stats.", freedom, budget);
             ui_notice(msg, true);
-        } else if (pick >= 2 && pick < 10) {
-            int i = pick - 2;
-            int base = pi->st[i];
-            char hint[64];
-            snprintf(hint, sizeof(hint), "%s target (base %d)", STAT_NAMES[i], base);
-            int lo = base - 99; if (lo < 0) lo = 0;
-            if (!ui_number(hint, base + inv[i], lo, base + 199, &v)) continue;
-            int ninv = v - base;
-            int nsum = inv_sum - inv[i] + ninv;
-            if (nsum > budget) {
-                ui_header();
-                char msg[96];
-                snprintf(msg, sizeof(msg), "Not enough freedom points (left %d).\nLower another stat first.", freedom);
-                ui_notice(msg, false);
-                continue;
+        } else if (pick >= 4 && pick < 12) {
+            int i = pick - 4;
+            if (delta > 0) {
+                train_plus(ctx, blk, pi, i);
+            } else if (delta < 0) {
+                /* untrain: give the point back to freedom */
+                wr16(ctx, blk + g->p_invest_off + i * 2, (s16)(inv[i] - 1));
+                wr16(ctx, blk + gp + 4, (s16)(freedom + 1));
+            } else {
+                int base = pi->st[i];
+                char hint[64];
+                snprintf(hint, sizeof(hint), "%s target (base %d)", STAT_NAMES[i], base);
+                int lo = base - 99; if (lo < 0) lo = 0;
+                if (!ui_number(hint, base + inv[i], lo, base + 199, &v)) continue;
+                int ninv = v - base;
+                int nsum = inv_sum - inv[i] + ninv;
+                if (nsum > budget) {
+                    ui_header();
+                    char msg[96];
+                    snprintf(msg, sizeof(msg), "Not enough freedom points (left %d).\nLower another stat first.", freedom);
+                    ui_notice(msg, false);
+                    continue;
+                }
+                wr16(ctx, blk + g->p_invest_off + i * 2, (s16)ninv);
+                wr16(ctx, blk + gp + 4, (s16)(budget - nsum));
             }
-            wr16(ctx, blk + g->p_invest_off + i * 2, (s16)ninv);
-            wr16(ctx, blk + gp + 4, (s16)(budget - nsum));
-        } else if (pick == 10) {
+        } else if (pick == 12) {
             god_mode(ctx, blk, pi->name);
-        } else if (pick == 11) {
+        } else if (pick == 13) {
             char msg[96];
             snprintf(msg, sizeof(msg), "Reset freedom to %d and all\ninvested points to 0?", pi->freedom);
             if (ui_dialog("reset", msg, false)) {
@@ -509,21 +589,30 @@ static void inventory_items(SaveCtx *ctx, int sub)
         }
         if (!n) return;
 
-        int pick = ui_list(SUBCAT_NAMES[(sub >= 0 && sub < 24) ? sub : 0], lines, n, cursor);
+        int delta = 0;
+        int pick = ui_list_adj(SUBCAT_NAMES[(sub >= 0 && sub < 24) ? sub : 0], lines, n, cursor, &delta);
         if (pick < 0) return;
         cursor = pick;
         if (!qty_offs[pick]) {
-            ui_header();
-            ui_notice("Ownership-only entry, no quantity.", false);
+            if (!delta) {
+                ui_header();
+                ui_notice("Ownership-only entry, no quantity.", false);
+            }
             continue;
         }
 
         s32 qty, eq = 0;
         memcpy(&qty, ctx->plain + qty_offs[pick], 4);
         if (eq_offs[pick]) memcpy(&eq, ctx->plain + eq_offs[pick], 4);
+        int lo = (eq > 0) ? eq : 0;
         int v;
-        if (ui_number("Quantity", qty, (eq > 0) ? eq : 0, 99, &v))
+        if (delta) {
+            v = qty + delta;
+            if (v < lo || v > 99) continue;
             memcpy(ctx->plain + qty_offs[pick], &v, 4);
+        } else if (ui_number("Quantity", qty, lo, 99, &v)) {
+            memcpy(ctx->plain + qty_offs[pick], &v, 4);
+        }
     }
 }
 

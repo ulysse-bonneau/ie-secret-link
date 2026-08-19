@@ -105,3 +105,39 @@ bool ui_number(const char *hint, int initial, int min, int max, int *out)
     *out = (int)v;
     return true;
 }
+
+/* list where LEFT/RIGHT adjusts the selected row's value (delta -1/+1),
+ * A opens the keyboard (delta 0), L/R shoulder pages, B backs out (-1) */
+int ui_list_adj(const char *title, const char *const *lines, int n, int cursor, int *delta)
+{
+    if (n == 0) return -1;
+    if (cursor < 0 || cursor >= n) cursor = 0;
+    int top = 0;
+    bool dirty = true;
+    while (aptMainLoop()) {
+        if (cursor < top) top = cursor;
+        if (cursor >= top + LIST_ROWS) top = cursor - LIST_ROWS + 1;
+        if (dirty) {
+            ui_header();
+            printf(C_KEY " %s " C_RESET "(%d/%d)\n\n", title, cursor + 1, n);
+            for (int i = top; i < top + LIST_ROWS && i < n; i++)
+                printf(" %s %-46.46s " C_RESET "\n", (i == cursor) ? C_SEL : " ", lines[i]);
+            printf("\x1b[28;1H" C_DIM " LEFT/RIGHT adjust  A keyboard  L/R page  B back" C_RESET);
+            dirty = false;
+        }
+        hidScanInput();
+        u32 k = hidKeysDown();
+        if (k & KEY_A) { *delta = 0; return cursor; }
+        if (k & (KEY_B | KEY_START)) return -1;
+        if (k & KEY_UP)    { cursor = (cursor + n - 1) % n; dirty = true; }
+        if (k & KEY_DOWN)  { cursor = (cursor + 1) % n; dirty = true; }
+        if (k & KEY_LEFT)  { *delta = -1; return cursor; }
+        if (k & KEY_RIGHT) { *delta = +1; return cursor; }
+        if (k & KEY_L) { cursor -= LIST_ROWS; if (cursor < 0) cursor = 0; dirty = true; }
+        if (k & KEY_R) { cursor += LIST_ROWS; if (cursor >= n) cursor = n - 1; dirty = true; }
+        gfxFlushBuffers();
+        gfxSwapBuffers();
+        gspWaitForVBlank();
+    }
+    return -1;
+}
