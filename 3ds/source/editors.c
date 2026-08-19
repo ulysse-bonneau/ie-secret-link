@@ -9,7 +9,10 @@ static void wr32(SaveCtx *ctx, u32 off, s32 v) { memcpy(ctx->plain + off, &v, 4)
 static s16 rd16(SaveCtx *ctx, u32 off) { s16 v; memcpy(&v, ctx->plain + off, 2); return v; }
 static void wr16(SaveCtx *ctx, u32 off, s16 v) { memcpy(ctx->plain + off, &v, 2); }
 
-#define PICK_MAX 900
+#define PICK_MAX 4096
+static const void *pick_ptr[PICK_MAX];
+static char pick_lab[PICK_MAX][40];
+static const char *pick_lines[PICK_MAX];
 
 static bool name_match(const char *name, const char *filt)
 {
@@ -395,38 +398,45 @@ static int next_player_index(SaveCtx *ctx, int count)
 static const PlayerInfo *player_db_picker(SaveCtx *ctx, bool skip_owned)
 {
     const GameDef *g = ctx->game;
-    char filt[24];
-    if (!ui_text_opt("Filter (empty = all)", filt, sizeof(filt))) return NULL;
-    static const PlayerInfo *found[PICK_MAX];
-    static char plabels[PICK_MAX][40];
-    const char *lines[PICK_MAX];
-    int n = 0;
-    for (int i = 0; i < g->db_count && n < PICK_MAX; i++) {
-        const PlayerInfo *pi = &g->db[i];
-        if (!name_match(pi->name, filt)) continue;
-        if (skip_owned) {
-            bool owned = false;
-            for (int k = 0; k < g->pmax && !owned; k++) {
-                u32 id;
-                memcpy(&id, ctx->plain + g->pdata_off + (u32)k * g->pblock + g->p_id_off, 4);
-                if (id == pi->id) owned = true;
+    char filt[24] = "";
+    int cursor = 0;
+    while (aptMainLoop()) {
+        int n = 0;
+        for (int i = 0; i < g->db_count && n < PICK_MAX; i++) {
+            const PlayerInfo *pi = &g->db[i];
+            if (!name_match(pi->name, filt)) continue;
+            if (skip_owned) {
+                bool owned = false;
+                for (int k = 0; k < g->pmax && !owned; k++) {
+                    u32 id;
+                    memcpy(&id, ctx->plain + g->pdata_off + (u32)k * g->pblock + g->p_id_off, 4);
+                    if (id == pi->id) owned = true;
+                }
+                if (owned) continue;
             }
-            if (owned) continue;
+            pick_ptr[n] = pi;
+            snprintf(pick_lab[n], 40, "%-2s %-4s %s", pi->pos, pi->elem, pi->name);
+            pick_lines[n] = pick_lab[n];
+            n++;
         }
-        found[n] = pi;
-        snprintf(plabels[n], 40, "%-2s %-4s %s", pi->pos, pi->elem, pi->name);
-        lines[n] = plabels[n];
-        n++;
+        if (!n) {
+            ui_header();
+            ui_notice(filt[0] ? "No match; search again." : "No player available.", false);
+            if (!filt[0]) return NULL;
+            filt[0] = 0;
+            continue;
+        }
+        pick_sort(n);
+        int delta = 0;
+        int pick = ui_list_adj(filt[0] ? filt : "Pick a player (Y: search)", pick_lines, n, cursor, &delta);
+        if (pick < 0) return NULL;
+        cursor = pick;
+        if (delta == 3) { ui_text_opt("Search", filt, sizeof(filt)); cursor = 0; continue; }
+        if (delta) continue;
+        return (const PlayerInfo *)pick_ptr[pick];
     }
-    if (!n) {
-        ui_header();
-        ui_notice("No matching player.", false);
-        return NULL;
-    }
-    int pick = ui_list("Pick a player", lines, n, 0);
-    return (pick < 0) ? NULL : found[pick];
+    return NULL;
 }
-
 
 static const MoveInfo *move_info(const GameDef *g, u32 id)
 {
@@ -442,27 +452,34 @@ static const MoveInfo *move_info(const GameDef *g, u32 id)
 static const MoveInfo *move_db_picker(SaveCtx *ctx)
 {
     const GameDef *g = ctx->game;
-    char filt[24];
-    if (!ui_text_opt("Filter (empty = all)", filt, sizeof(filt))) return NULL;
-    static const MoveInfo *found[PICK_MAX];
-    static char mlabels[PICK_MAX][36];
-    const char *lines[PICK_MAX];
-    int n = 0;
-    for (int i = 0; i < g->mdb_count && n < PICK_MAX; i++) {
-        const MoveInfo *mi = &g->mdb[i];
-        if (!name_match(mi->name, filt)) continue;
-        found[n] = mi;
-        snprintf(mlabels[n], 36, "%-2s %s", mi->kind, mi->name);
-        lines[n] = mlabels[n];
-        n++;
+    char filt[24] = "";
+    int cursor = 0;
+    while (aptMainLoop()) {
+        int n = 0;
+        for (int i = 0; i < g->mdb_count && n < PICK_MAX; i++) {
+            const MoveInfo *mi = &g->mdb[i];
+            if (!name_match(mi->name, filt)) continue;
+            pick_ptr[n] = mi;
+            snprintf(pick_lab[n], 40, "%-2s %s", mi->kind, mi->name);
+            pick_lines[n] = pick_lab[n];
+            n++;
+        }
+        if (!n) {
+            ui_header();
+            ui_notice("No match; search again.", false);
+            filt[0] = 0;
+            continue;
+        }
+        pick_sort(n);
+        int delta = 0;
+        int pick = ui_list_adj(filt[0] ? filt : "Pick a move (Y: search)", pick_lines, n, cursor, &delta);
+        if (pick < 0) return NULL;
+        cursor = pick;
+        if (delta == 3) { ui_text_opt("Search", filt, sizeof(filt)); cursor = 0; continue; }
+        if (delta) continue;
+        return (const MoveInfo *)pick_ptr[pick];
     }
-    if (!n) {
-        ui_header();
-        ui_notice("No matching move.", false);
-        return NULL;
-    }
-    int pick = ui_list("Pick a move", lines, n, 0);
-    return (pick < 0) ? NULL : found[pick];
+    return NULL;
 }
 
 static void moves_editor(SaveCtx *ctx, u32 blk, const char *pname)
@@ -534,32 +551,50 @@ static void moves_editor(SaveCtx *ctx, u32 blk, const char *pname)
 static void avatar_editor(SaveCtx *ctx, u32 blk, const char *pname)
 {
     const GameDef *g = ctx->game;
-    char filt[24];
-    if (!ui_text_opt("Filter (empty = all)", filt, sizeof(filt))) return;
-    static const AvatarInfo *found[PICK_MAX];
-    static char alabels[PICK_MAX][40];
-    const char *lines[PICK_MAX + 1];
-    lines[0] = "[ None (remove avatar) ]";
-    int n = 1;
-    for (int i = 0; i < g->adb_count && n < PICK_MAX; i++) {
-        const AvatarInfo *ai = &g->adb[i];
-        if (!ai->spirit && !g->totem_off) continue; /* totems are Galaxy-only */
-        if (!name_match(ai->name, filt)) continue;
-        found[n] = ai;
-        snprintf(alabels[n], 40, "%-6s %s", ai->spirit ? "Spirit" : "Totem", ai->name);
-        lines[n] = alabels[n];
-        n++;
+    char filt[24] = "";
+    int cursor = 0;
+    const AvatarInfo *ai = NULL;
+    while (aptMainLoop()) {
+        pick_lines[0] = "[ None (remove avatar) ]";
+        pick_ptr[0] = NULL;
+        int n = 1;
+        for (int i = 0; i < g->adb_count && n < PICK_MAX; i++) {
+            const AvatarInfo *a = &g->adb[i];
+            if (!a->spirit && !g->totem_off) continue; /* totems are Galaxy-only */
+            if (!name_match(a->name, filt)) continue;
+            pick_ptr[n] = a;
+            snprintf(pick_lab[n], 40, "%-6s %s", a->spirit ? "Spirit" : "Totem", a->name);
+            pick_lines[n] = pick_lab[n];
+            n++;
+        }
+        if (n > 2) {
+            /* keep [None] on top, sort the rest */
+            static const char *save0;
+            save0 = pick_lines[0];
+            memmove(pick_lines, pick_lines + 1, (size_t)(n - 1) * sizeof(*pick_lines));
+            memmove(pick_ptr, pick_ptr + 1, (size_t)(n - 1) * sizeof(*pick_ptr));
+            pick_sort(n - 1);
+            memmove(pick_lines + 1, pick_lines, (size_t)(n - 1) * sizeof(*pick_lines));
+            memmove(pick_ptr + 1, pick_ptr, (size_t)(n - 1) * sizeof(*pick_ptr));
+            pick_lines[0] = save0;
+            pick_ptr[0] = NULL;
+        }
+        int delta = 0;
+        int pick = ui_list_adj(filt[0] ? filt : pname, pick_lines, n, cursor, &delta);
+        if (pick < 0) return;
+        cursor = pick;
+        if (delta == 3) { ui_text_opt("Search", filt, sizeof(filt)); cursor = 0; continue; }
+        if (delta) continue;
+        ai = (const AvatarInfo *)pick_ptr[pick];
+        break;
     }
-    int pick = ui_list(pname, lines, n, 0);
-    if (pick < 0) return;
 
     u32 av = blk + g->p_avatar_off;
-    if (pick == 0) {
+    if (!ai) {
         memset(ctx->plain + av, 0, 6);
         if (g->totem_off) wr32(ctx, blk, 0);
         return;
     }
-    const AvatarInfo *ai = found[pick];
     if (ai->spirit) {
         int lv = 1;
         if (!ui_number("Avatar level (1-5)", 1, 1, 5, &lv)) return;
@@ -568,7 +603,6 @@ static void avatar_editor(SaveCtx *ctx, u32 blk, const char *pname)
         ctx->plain[av + 5] = 0;
         if (g->totem_off) wr32(ctx, blk, 0);
     } else {
-        /* totem lives in the field at the start of the block */
         memset(ctx->plain + av, 0, 6);
         wr32(ctx, blk, (s32)ai->id);
     }
@@ -647,14 +681,13 @@ static void edit_player(SaveCtx *ctx, u32 blk, const PlayerInfo *pi)
         int level = ctx->plain[blk + gp + 6];
 
         char rows[17][48];
-        snprintf(rows[0], 48, "Level      %-4d (GP/TP exact at 99 only)", level);
+        snprintf(rows[0], 48, "Level      %d", level);
         snprintf(rows[1], 48, "GP         %d", rd16(ctx, blk + gp));
         snprintf(rows[2], 48, "TP         %d", rd16(ctx, blk + gp + 2));
         snprintf(rows[3], 48, "Freedom left    %d", freedom);
-        const char *ap = (level < 99) ? "~" : "";
         for (int i = 0; i < 8; i++) {
             int b = stat_base(pi, i, level);
-            snprintf(rows[4 + i], 48, "%-9s %s%3d %+4d = %s%d", STAT_NAMES[i], ap, b, inv[i], ap, b + inv[i]);
+            snprintf(rows[4 + i], 48, "%-9s %3d %+4d = %d", STAT_NAMES[i], b, inv[i], b + inv[i]);
         }
         snprintf(rows[12], 48, "[ God mode (free edit) ]");
         snprintf(rows[13], 48, "[ Reset freedom & invested points ]");
@@ -666,7 +699,7 @@ static void edit_player(SaveCtx *ctx, u32 blk, const PlayerInfo *pi)
 
         char ptitle[48];
         snprintf(ptitle, sizeof(ptitle), "%s%s", pi->name,
-                 (level < 99) ? "  (~ = estimate)" : "");
+                 (level < 99) ? " (stats exact at 99 only)" : "");
         int delta = 0;
         int pick = ui_list_adj(ptitle, lines, 17, cursor, &delta);
         if (pick < 0) return;
@@ -958,42 +991,43 @@ static void item_remove(SaveCtx *ctx, int grp, int k)
     memset(ctx->plain + base + (u32)(cnt - 1) * stride, 0, stride);
 }
 
-/* filtered picker over the item DB restricted to one subcategory;
- * returns the picked ItemInfo or NULL */
+/* picker over the item DB restricted to one subcategory; browse first,
+ * Y = search; returns the picked ItemInfo or NULL */
 static const ItemInfo *item_db_picker(SaveCtx *ctx, int sub)
 {
     const GameDef *g = ctx->game;
-    char filt[24];
-    if (!ui_text_opt("Filter (empty = all)", filt, sizeof(filt))) return NULL;
-    static const ItemInfo *found[PICK_MAX];
-    const char *lines[PICK_MAX];
-    int n = 0;
-    for (int i = 0; i < g->idb_count && n < PICK_MAX; i++) {
-        const ItemInfo *ii = &g->idb[i];
-        if (ii->sub != sub) continue;
-        if (item_owned(ctx, ii->id)) continue;
-        if (!name_match(ii->name, filt)) continue;
-        found[n] = ii;
-        lines[n] = ii->name;
-        n++;
+    char filt[24] = "";
+    int cursor = 0;
+    while (aptMainLoop()) {
+        int n = 0;
+        for (int i = 0; i < g->idb_count && n < PICK_MAX; i++) {
+            const ItemInfo *ii = &g->idb[i];
+            if (ii->sub != sub) continue;
+            if (item_owned(ctx, ii->id)) continue;
+            if (!name_match(ii->name, filt)) continue;
+            pick_ptr[n] = ii;
+            snprintf(pick_lab[n], 40, "%s", ii->name);
+            pick_lines[n] = pick_lab[n];
+            n++;
+        }
+        if (!n) {
+            ui_header();
+            ui_notice(filt[0] ? "No match; Y to search again." : "No unowned item here.", false);
+            if (!filt[0]) return NULL;
+            filt[0] = 0;
+            continue;
+        }
+        pick_sort(n);
+        int delta = 0;
+        int pick = ui_list_adj(filt[0] ? filt : "Add item (Y: search)", pick_lines, n, cursor, &delta);
+        if (pick < 0) return NULL;
+        cursor = pick;
+        if (delta == 3) { ui_text_opt("Search", filt, sizeof(filt)); cursor = 0; continue; }
+        if (delta) continue;
+        return (const ItemInfo *)pick_ptr[pick];
     }
-    if (!n) {
-        ui_header();
-        ui_notice("No matching unowned item.", false);
-        return NULL;
-    }
-    int pick = ui_list("Add item", lines, n, 0);
-    return (pick < 0) ? NULL : found[pick];
+    return NULL;
 }
-
-#define MAX_ITEMS 1100
-
-static const char *SUBCAT_NAMES[24] = {
-    "Other", "Boots", "Gloves", "Bracelets", "Pendants", "Celebrations",
-    "Consumables", "Shoot moves", "Dribble moves", "Block moves", "Save moves",
-    "Skills", "Key items", "PalPack", "Topics", "Photos", "Formations",
-    "Coaches", "Tactics", "Kits", "Emblems", "Spirits", "Totems", "PalPack Cards",
-};
 
 static void inventory_items(SaveCtx *ctx, int sub)
 {
@@ -1434,7 +1468,7 @@ bool apply_changes(SaveCtx *ctx)
     free(old);
     if (other) remit("unlock/other flags: %lu byte(s)", (unsigned long)other);
     if (rl_over) remit("...and %d more (see log.txt)", rl_over);
-    if (players_touched) remit("(GP/TP approx below Lv 99)");
+    if (players_touched) remit("(stats exact at 99 only)");
 
     const char *lines[64];
     for (int i = 0; i < rl_n; i++) lines[i] = rl[i];

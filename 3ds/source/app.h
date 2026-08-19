@@ -8,7 +8,7 @@
 #include "moves_db.h"
 #include "avatars_db.h"
 
-#define VERSION "v0.10.2"
+#define VERSION "v0.10.3"
 
 #define BACKUP_DIR     "/IESM"
 #define OLD_BACKUP_DIR "/ie-secret-link"
