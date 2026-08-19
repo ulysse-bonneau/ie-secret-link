@@ -4,8 +4,9 @@
 #include <stdio.h>
 #include "unlock_data.h"
 #include "players_db.h"
+#include "items_db.h"
 
-#define VERSION "v0.5.0"
+#define VERSION "v0.6.0"
 
 #define BACKUP_DIR     "/IESM"
 #define OLD_BACKUP_DIR "/ie-secret-link"
@@ -32,6 +33,11 @@ typedef struct {
     u32 p_id_off, p_gp_off, p_invest_off; /* TP = gp+2, Freedom = gp+4, Level = gp+6 */
     const PlayerInfo *db;
     int db_count;
+    /* inventory: group1 (idx,id,qty = 12 B), group2 (idx,id,qty,equipped = 16 B) */
+    u32 g1_off; int g1_n;
+    u32 g2_off; int g2_n;
+    const ItemInfo *idb;
+    int idb_count;
     /* unlock-all-data */
     const UnlockRegion *unlock;
     int unlock_n;
@@ -87,4 +93,5 @@ void link_level_editor(SaveCtx *ctx);
 void sdlink_unlock(SaveCtx *ctx);
 void saveinfo_editor(SaveCtx *ctx);
 void player_editor(SaveCtx *ctx);
+void inventory_editor(SaveCtx *ctx);
 bool apply_changes(SaveCtx *ctx);

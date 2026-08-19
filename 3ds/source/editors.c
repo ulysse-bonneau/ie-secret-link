@@ -329,3 +329,97 @@ void player_editor(SaveCtx *ctx)
     }
     free(snap);
 }
+
+/* ---- inventory ---- */
+
+static const ItemInfo *item_info(const GameDef *g, u32 id)
+{
+    int lo = 0, hi = g->idb_count - 1;
+    while (lo <= hi) {
+        int mid = (lo + hi) / 2;
+        if (g->idb[mid].id == id) return &g->idb[mid];
+        if (g->idb[mid].id < id) lo = mid + 1; else hi = mid - 1;
+    }
+    return NULL;
+}
+
+#define MAX_ITEMS 1100
+
+void inventory_editor(SaveCtx *ctx)
+{
+    const GameDef *g = ctx->game;
+    u32 g2_end = g->g2_off + (u32)g->g2_n * 16;
+    if (!g->g1_off || ctx->size < g2_end) {
+        ui_header();
+        ui_notice("Inventory not supported for this save.", false);
+        return;
+    }
+
+    u32 snap_start = g->g1_off;
+    u32 snap_len = g2_end - snap_start;
+    u8 *snap = malloc(snap_len);
+    memcpy(snap, ctx->plain + snap_start, snap_len);
+
+    static u32 qty_offs[MAX_ITEMS];
+    static u32 eq_offs[MAX_ITEMS];   /* 0 = no equipped counter (group 1) */
+    static char labels[MAX_ITEMS][48];
+    const char *lines[MAX_ITEMS];
+    int cursor = 0;
+
+    while (aptMainLoop()) {
+        int n = 0;
+        for (int grp = 0; grp < 2; grp++) {
+            u32 base = grp ? g->g2_off : g->g1_off;
+            u32 stride = grp ? 16 : 12;
+            int cnt = grp ? g->g2_n : g->g1_n;
+            for (int i = 0; i < cnt && n < MAX_ITEMS; i++) {
+                u32 e = base + (u32)i * stride;
+                u32 id;
+                memcpy(&id, ctx->plain + e + 4, 4);
+                if (!id) continue;
+                const ItemInfo *ii = item_info(g, id);
+                if (!ii) continue;
+                s32 qty;
+                memcpy(&qty, ctx->plain + e + 8, 4);
+                qty_offs[n] = e + 8;
+                eq_offs[n] = grp ? e + 12 : 0;
+                if (grp) {
+                    s32 eq;
+                    memcpy(&eq, ctx->plain + e + 12, 4);
+                    snprintf(labels[n], 48, "%3ld %-27s (%ld eq)", (long)qty, ii->name, (long)eq);
+                } else {
+                    snprintf(labels[n], 48, "%3ld %-27s", (long)qty, ii->name);
+                }
+                lines[n] = labels[n];
+                n++;
+            }
+        }
+        if (!n) {
+            ui_header();
+            ui_notice("No known items in this save.", false);
+            break;
+        }
+
+        int pick = ui_list("Inventory (B: back)", lines, n, cursor);
+        if (pick < 0) break;
+        cursor = pick;
+
+        s32 qty, eq = 0;
+        memcpy(&qty, ctx->plain + qty_offs[pick], 4);
+        if (eq_offs[pick]) memcpy(&eq, ctx->plain + eq_offs[pick], 4);
+        int v;
+        if (ui_number("Quantity", qty, (eq > 0) ? eq : 0, 99, &v))
+            memcpy(ctx->plain + qty_offs[pick], &v, 4);
+    }
+
+    if (memcmp(snap, ctx->plain + snap_start, snap_len) != 0) {
+        if (ui_dialog("save changes", "Commit inventory changes?", false)) {
+            ui_header();
+            if (!apply_changes(ctx))
+                memcpy(ctx->plain + snap_start, snap, snap_len);
+        } else {
+            memcpy(ctx->plain + snap_start, snap, snap_len);
+        }
+    }
+    free(snap);
+}

@@ -6,36 +6,61 @@
 #include "app.h"
 #include "codec.h"
 
-/* one-time move of .bak files from the pre-rename directory */
-void migrate_backups(void)
+static void game_dir(SaveCtx *ctx, char *out, size_t outsz)
 {
-    mkdir(BACKUP_DIR, 0777);
-    DIR *d = opendir(OLD_BACKUP_DIR);
-    if (!d) return;
+    snprintf(out, outsz, BACKUP_DIR "/%s", ctx->game->shortname);
+    mkdir(out, 0777);
+}
+
+/* sort a directory's stray .bak files into per-game subfolders; files with an
+ * unknown prefix predate multi-game support and were always Galaxy */
+static int sort_dir_into_games(const char *dirpath)
+{
+    DIR *d = opendir(dirpath);
+    if (!d) return 0;
     struct dirent *e;
     int moved = 0;
     while ((e = readdir(d))) {
         size_t l = strlen(e->d_name);
         if (l < 5 || strcmp(e->d_name + l - 4, ".bak")) continue;
-        char from[0x300], to[0x300];
-        snprintf(from, sizeof(from), OLD_BACKUP_DIR "/%s", e->d_name);
-        snprintf(to, sizeof(to), BACKUP_DIR "/%s", e->d_name);
+        const char *sub = "galaxy";
+        for (int i = 0; i < GAMES_N; i++) {
+            size_t sl = strlen(GAMES[i].shortname);
+            if (!strncmp(e->d_name, GAMES[i].shortname, sl) && e->d_name[sl] == '-') {
+                sub = GAMES[i].shortname;
+                break;
+            }
+        }
+        char to[0x300];
+        snprintf(to, sizeof(to), BACKUP_DIR "/%s", sub);
+        mkdir(to, 0777);
+        char from[0x300];
+        snprintf(from, sizeof(from), "%s/%s", dirpath, e->d_name);
+        snprintf(to, sizeof(to), BACKUP_DIR "/%s/%s", sub, e->d_name);
         if (rename(from, to) == 0) moved++;
     }
     closedir(d);
-    if (moved) logline("migrated %d backup(s) to sd:" BACKUP_DIR, moved);
+    return moved;
+}
+
+void migrate_backups(void)
+{
+    mkdir(BACKUP_DIR, 0777);
+    int moved = sort_dir_into_games(OLD_BACKUP_DIR) + sort_dir_into_games(BACKUP_DIR);
+    if (moved) logline("sorted %d backup(s) into game folders", moved);
 }
 
 bool backup_save(SaveCtx *ctx, const char *name)
 {
-    char path[0x300];
+    char dir[0x40], path[0x300];
+    game_dir(ctx, dir, sizeof(dir));
     time_t t = time(NULL);
     struct tm *tm = localtime(&t);
     if (name)
-        snprintf(path, sizeof(path), BACKUP_DIR "/%s.bak", name);
+        snprintf(path, sizeof(path), "%s/%s.bak", dir, name);
     else
-        snprintf(path, sizeof(path), BACKUP_DIR "/%s-auto-%04d-%02d-%02d-%02d%02d%02d.bak",
-                 ctx->game->shortname, tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday,
+        snprintf(path, sizeof(path), "%s/auto-%04d-%02d-%02d-%02d%02d%02d.bak",
+                 dir, tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday,
                  tm->tm_hour, tm->tm_min, tm->tm_sec);
     FILE *out = fopen(path, "wb");
     if (!out) return false;
@@ -63,8 +88,9 @@ static bool bak_matches_game(SaveCtx *ctx, const char *full, long size)
 
 static bool restore_file(SaveCtx *ctx, const char *bakname)
 {
-    char full[0x300];
-    snprintf(full, sizeof(full), BACKUP_DIR "/%s", bakname);
+    char dir[0x40], full[0x300];
+    game_dir(ctx, dir, sizeof(dir));
+    snprintf(full, sizeof(full), "%s/%s", dir, bakname);
     FILE *in = fopen(full, "rb");
     if (!in) return false;
     fseek(in, 0, SEEK_END);
@@ -117,7 +143,9 @@ void backup_manager(SaveCtx *ctx)
     while (aptMainLoop()) {
         static char names[MAX_BAKS][BAKNAME];
         int n = 0;
-        DIR *d = opendir(BACKUP_DIR);
+        char dir[0x40];
+        game_dir(ctx, dir, sizeof(dir));
+        DIR *d = opendir(dir);
         if (d) {
             struct dirent *e;
             while ((e = readdir(d)) && n < MAX_BAKS) {
@@ -143,7 +171,7 @@ void backup_manager(SaveCtx *ctx)
             time_t t = time(NULL);
             struct tm *tm = localtime(&t);
             char def[48];
-            snprintf(def, sizeof(def), "%s-%04d-%02d-%02d-%02d%02d", ctx->game->shortname,
+            snprintf(def, sizeof(def), "%04d-%02d-%02d-%02d%02d",
                      tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday, tm->tm_hour, tm->tm_min);
             if (!ui_text("Backup name", def, name, 40)) continue;
             ui_header();
@@ -157,7 +185,7 @@ void backup_manager(SaveCtx *ctx)
         if (act == 0) {
             char full[0x300];
             struct stat st;
-            snprintf(full, sizeof(full), BACKUP_DIR "/%s", bak);
+            snprintf(full, sizeof(full), "%s/%s", dir, bak);
             if (stat(full, &st) != 0 || !bak_matches_game(ctx, full, st.st_size)) {
                 ui_header();
                 ui_notice("Refused: backup is not a save of\nthis game.", false);
@@ -175,8 +203,8 @@ void backup_manager(SaveCtx *ctx)
             char name[40];
             if (!ui_text("New name", base, name, 40)) continue;
             char from[0x300], to[0x300];
-            snprintf(from, sizeof(from), BACKUP_DIR "/%s", bak);
-            snprintf(to, sizeof(to), BACKUP_DIR "/%s.bak", name);
+            snprintf(from, sizeof(from), "%s/%s", dir, bak);
+            snprintf(to, sizeof(to), "%s/%s.bak", dir, name);
             ui_header();
             ui_notice(rename(from, to) == 0 ? "Renamed." : "Rename failed.", true);
         } else if (act == 2) {
@@ -184,7 +212,7 @@ void backup_manager(SaveCtx *ctx)
             snprintf(msg, sizeof(msg), "Delete %s permanently?", bak);
             if (!ui_dialog("delete", msg, true)) continue;
             char full[0x300];
-            snprintf(full, sizeof(full), BACKUP_DIR "/%s", bak);
+            snprintf(full, sizeof(full), "%s/%s", dir, bak);
             ui_header();
             ui_notice(remove(full) == 0 ? "Deleted." : "Delete failed.", true);
         }

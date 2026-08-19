@@ -282,22 +282,24 @@ int main(void)
                 g->unlock_label,
                 "Save info (name, money, time)",
                 "Players (level, stats)",
+                "Inventory (item quantities)",
                 "Backups (new, restore, rename)",
                 "Switch save",
                 "Quit",
             };
-            int pick = ui_list(chrow, items, 7, cursor);
-            if (pick < 0 || pick == 6) { quit = true; break; }
+            int pick = ui_list(chrow, items, 8, cursor);
+            if (pick < 0 || pick == 7) { quit = true; break; }
             cursor = pick;
             switch (pick) {
             case 0: link_level_editor(&ctx); break;
             case 1: sdlink_unlock(&ctx); break;
             case 2: saveinfo_editor(&ctx); break;
             case 3: player_editor(&ctx); break;
-            case 4: backup_manager(&ctx); break;
-            case 5: break;
+            case 4: inventory_editor(&ctx); break;
+            case 5: backup_manager(&ctx); break;
+            case 6: break;
             }
-            if (pick == 5) break;
+            if (pick == 6) break;
         }
         unload(&ctx);
         if (quit || n_entries <= 1) break;

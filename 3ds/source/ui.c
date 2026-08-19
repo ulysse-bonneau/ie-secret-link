@@ -59,7 +59,7 @@ int ui_list(const char *title, const char *const *lines, int n, int cursor)
             printf(C_KEY " %s " C_RESET "(%d/%d)\n\n", title, cursor + 1, n);
             for (int i = top; i < top + LIST_ROWS && i < n; i++)
                 printf(" %s %-46.46s " C_RESET "\n", (i == cursor) ? C_SEL : " ", lines[i]);
-            printf("\x1b[28;1H" C_DIM " D-Pad move (L/R page)   A select   B back" C_RESET);
+            printf("\x1b[28;1H" C_DIM " UP/DOWN move  L/R or LEFT/RIGHT page  A ok B back" C_RESET);
             dirty = false;
         }
         hidScanInput();
@@ -68,8 +68,8 @@ int ui_list(const char *title, const char *const *lines, int n, int cursor)
         if (k & (KEY_B | KEY_START)) return -1;
         if (k & KEY_UP)    { cursor = (cursor + n - 1) % n; dirty = true; }
         if (k & KEY_DOWN)  { cursor = (cursor + 1) % n; dirty = true; }
-        if (k & KEY_LEFT)  { cursor -= LIST_ROWS; if (cursor < 0) cursor = 0; dirty = true; }
-        if (k & KEY_RIGHT) { cursor += LIST_ROWS; if (cursor >= n) cursor = n - 1; dirty = true; }
+        if (k & (KEY_LEFT | KEY_L))  { cursor -= LIST_ROWS; if (cursor < 0) cursor = 0; dirty = true; }
+        if (k & (KEY_RIGHT | KEY_R)) { cursor += LIST_ROWS; if (cursor >= n) cursor = n - 1; dirty = true; }
         gfxFlushBuffers();
         gfxSwapBuffers();
         gspWaitForVBlank();
