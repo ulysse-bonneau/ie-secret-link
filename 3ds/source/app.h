@@ -6,7 +6,7 @@
 #include "players_db.h"
 #include "items_db.h"
 
-#define VERSION "v0.6.0"
+#define VERSION "v0.7.0"
 
 #define BACKUP_DIR     "/IESM"
 #define OLD_BACKUP_DIR "/ie-secret-link"
@@ -36,6 +36,7 @@ typedef struct {
     /* inventory: group1 (idx,id,qty = 12 B), group2 (idx,id,qty,equipped = 16 B) */
     u32 g1_off; int g1_n;
     u32 g2_off; int g2_n;
+    u32 g3_off; int g3_n;  /* ownership-only entries (idx,id = 8 B), no quantity */
     const ItemInfo *idb;
     int idb_count;
     /* unlock-all-data */
