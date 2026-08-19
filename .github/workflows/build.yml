@@ -27,8 +27,8 @@ jobs:
         with:
           name: elf
           path: |
-            3ds/ie-secret-link.3dsx
-            3ds/ie-secret-link.elf
+            3ds/iesm.3dsx
+            3ds/iesm.elf
 
   package:
     needs: build
@@ -52,17 +52,30 @@ jobs:
       - name: Package CIA
         run: 3ds/package.sh
 
+      - name: Generate download QR code
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          pip install --quiet qrcode pillow
+          python3 tools/gen_assets.py --qr \
+            "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/iesm.cia" \
+            qr-cia.png
+
       - uses: actions/upload-artifact@v4
         with:
-          name: ie-secret-link
+          name: iesm
           path: |
-            3ds/ie-secret-link.cia
-            3ds/ie-secret-link.3dsx
+            3ds/iesm.cia
+            3ds/iesm.3dsx
 
       - name: Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          body: |
+            Scan with FBI (Remote Install → Scan QR Code) to install:
+
+            ![QR](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/qr-cia.png)
           files: |
-            3ds/ie-secret-link.cia
-            3ds/ie-secret-link.3dsx
+            3ds/iesm.cia
+            3ds/iesm.3dsx
+            qr-cia.png

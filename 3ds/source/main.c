@@ -12,7 +12,7 @@
 #include "codec.h"
 #include "unlock_data.h"
 
-#define VERSION        "v0.2.0"
+#define VERSION        "v0.3.0"
 #define GALAXY_MAGIC   0x40F1
 #define LINK_OFFSET    0x90B4
 #define CHAPTER_OFFSET 0x9F1C
@@ -22,14 +22,17 @@
 #define TID_SUPERNOVA 0x000400000010BB00ULL
 
 static FILE *logfp;
+static PrintConsole topcon, botcon;
 
 static void logline(const char *fmt, ...)
 {
     va_list ap;
+    consoleSelect(&botcon);
     va_start(ap, fmt);
     vprintf(fmt, ap);
     va_end(ap);
     putchar('\n');
+    consoleSelect(&topcon);
     if (logfp) {
         va_start(ap, fmt);
         vfprintf(logfp, fmt, ap);
@@ -283,140 +286,187 @@ static u32 wait_key(void)
     return 0;
 }
 
+#define C_RESET  "\x1b[0m"
+#define C_TITLE  "\x1b[30;46m"   /* black on cyan */
+#define C_KEY    "\x1b[36m"      /* cyan  */
+#define C_VAL    "\x1b[33m"      /* yellow */
+#define C_SEL    "\x1b[30;47m"   /* black on white */
+#define C_WARN   "\x1b[31m"      /* red */
+#define C_OK     "\x1b[32m"      /* green */
+#define C_DIM    "\x1b[35m"      /* magenta */
+
+static void header(void)
+{
+    consoleClear();
+    printf(C_TITLE " IESM - Inazuma Eleven Save Manager   " VERSION " " C_RESET "\n\n");
+}
+
+/* modal on the top screen; returns true if `yes` key pressed */
+static bool dialog(const char *yes, const char *text, bool warn)
+{
+    header();
+    printf("%s%s" C_RESET "\n\n", warn ? C_WARN : "", text);
+    printf(C_KEY " A " C_RESET "%s   " C_KEY " B " C_RESET "cancel\n", yes);
+    while (aptMainLoop()) {
+        u32 k = wait_key();
+        if (k & KEY_A) return true;
+        if (k & KEY_B) return false;
+    }
+    return false;
+}
+
+static void notice(const char *text, bool ok)
+{
+    printf("\n%s%s" C_RESET "\n\n" C_DIM "Press any key." C_RESET "\n",
+           ok ? C_OK : C_WARN, text);
+    wait_key();
+}
+
+#define MENU_ITEMS 4
+
+static void draw_menu(SaveCtx *ctx, int cursor, int sel, int chapter, int current, int max)
+{
+    header();
+    printf(C_KEY "  Game    " C_RESET "GO Galaxy %s (%s)\n", title_name(ctx->tid), ctx->media);
+    printf(C_KEY "  Save    " C_RESET "%s (%lu b)\n", ctx->filepath, (unsigned long)ctx->size);
+    printf(C_KEY "  Chapter " C_RESET "%d\n", chapter);
+    printf(C_KEY "  Link lv " C_RESET "%d\n", current);
+    if (ctx->matches > 1)
+        printf(C_WARN "  %d save files found, patching first!" C_RESET "\n", ctx->matches);
+    printf("\n");
+
+    const char *labels[MENU_ITEMS] = {
+        NULL, "Unlock SD-Link content", "Restore latest backup", "Quit" };
+    for (int i = 0; i < MENU_ITEMS; i++) {
+        const char *cur = (i == cursor) ? C_SEL : "";
+        if (i == 0)
+            printf(" %s Secret link level   %s %d %s%s " C_RESET "\n",
+                   cur, (sel > 0) ? "<" : " ", sel, (sel < max) ? ">" : " ", cur);
+        else
+            printf(" %s %s " C_RESET "\n", cur, labels[i]);
+    }
+
+    printf("\n");
+    switch (cursor) {
+    case 0:
+        if (chapter < 10)
+            printf(C_DIM " Level 3 locked: chapter < 10." C_RESET "\n");
+        else
+            printf(C_DIM " Level 3 needs the version-exclusive\n team beaten, else the save glitches." C_RESET "\n");
+        break;
+    case 1:
+        printf(C_DIM " Data download + QR + GO/CS link\n rewards, all at once." C_RESET "\n");
+        break;
+    case 2:
+        printf(C_DIM " Newest .bak from sd:" BACKUP_DIR "." C_RESET "\n");
+        break;
+    default:
+        break;
+    }
+    printf("\x1b[28;1H" C_DIM " D-Pad move/adjust   A select   START quit" C_RESET);
+}
+
 int main(void)
 {
     gfxInitDefault();
-    consoleInit(GFX_TOP, NULL);
+    consoleInit(GFX_TOP, &topcon);
+    consoleInit(GFX_BOTTOM, &botcon);
+    consoleSelect(&topcon);
     fsInit();
 
     mkdir(BACKUP_DIR, 0777);
     logfp = fopen(BACKUP_DIR "/log.txt", "w");
 
-    logline("ie-secret-link " VERSION);
-    logline("");
+    header();
+    printf(" Searching for a GO Galaxy save...\n" C_DIM " (log on the bottom screen)" C_RESET "\n");
+    logline("IESM " VERSION);
 
     SaveCtx ctx = {0};
     if (!find_save(&ctx)) {
-        logline("");
-        logline("No GO Galaxy save found.");
-        logline("Full log: sd:" BACKUP_DIR "/log.txt");
-        logline("");
-        logline("Press any key to exit.");
-        wait_key();
+        header();
+        printf(C_WARN " No GO Galaxy save found.\n" C_RESET
+               "\n Insert the cartridge or install the\n game, then relaunch."
+               "\n\n Full log: sd:" BACKUP_DIR "/log.txt\n");
+        notice("Exiting.", false);
         goto out;
     }
-    logline("found save, tid %08lX%08lX",
-            (unsigned long)(ctx.tid >> 32), (unsigned long)ctx.tid);
-    logline("%d file(s) with Galaxy magic in archive", ctx.matches);
-    if (ctx.matches > 1)
-        logline("WARNING: multiple save files, only the\nfirst will be patched — report this!");
-    logline("");
-    logline("(photo this screen if reporting a bug)");
-    logline("Press any key for the menu.");
-    wait_key();
+    logline("found save, tid %08lX%08lX, %d match(es)",
+            (unsigned long)(ctx.tid >> 32), (unsigned long)ctx.tid, ctx.matches);
 
     int chapter = ctx.plain[CHAPTER_OFFSET];
     int current = ctx.plain[LINK_OFFSET];
     int sel = current;
     int max = (chapter < 10) ? 2 : 3;
     if (sel > max) sel = max;
+    int cursor = 0;
     bool dirty = true;
 
     while (aptMainLoop()) {
         if (dirty) {
-            consoleClear();
-            printf("ie-secret-link " VERSION "\n\n");
-            printf("Game:       GO Galaxy %s (%s)\n", title_name(ctx.tid), ctx.media);
-            printf("Save file:  %s (%lu bytes)\n", ctx.filepath, (unsigned long)ctx.size);
-            printf("Chapter:    %d\n", chapter);
-            printf("Link level: %d\n\n", current);
-            printf("Select new link level: < %d >\n\n", sel);
-            if (chapter < 10)
-                printf("Level 3 locked: chapter < 10.\n");
-            else
-                printf("Level 3 only if the version-exclusive\nteam is beaten, else the save glitches.\n");
-            printf("\nLEFT/RIGHT: change  A: apply  START: quit\n");
-            printf("SELECT: restore newest backup from SD\n");
-            printf("Y: unlock download/QR/GO-CS link content\n");
+            draw_menu(&ctx, cursor, sel, chapter, current, max);
             dirty = false;
         }
         hidScanInput();
         u32 k = hidKeysDown();
         if (k & KEY_START) break;
-        if (k & KEY_SELECT) {
-            consoleClear();
-            printf("Restore newest backup from\nsd:" BACKUP_DIR " over the current save?\n\n");
-            printf("A: restore   B: cancel\n");
-            if (wait_key() & KEY_A) {
-                if (restore_backup(&ctx)) {
-                    printf("\nRestored and committed.\nExiting; relaunch before patching.\n");
-                    printf("\nPress any key.\n");
-                    wait_key();
-                    break;
-                }
-                printf("\nRESTORE FAILED, see log.\n\nPress any key.\n");
-                wait_key();
-            }
-            dirty = true;
-            continue;
-        }
-        if (k & KEY_LEFT)  { if (sel > 0) sel--; dirty = true; }
-        if (k & KEY_RIGHT) { if (sel < max) sel++; dirty = true; }
-        if (k & KEY_Y) {
-            consoleClear();
-            printf("Unlock ALL data download + QR code +\nGO/CS link (SD Link) content.\n\n");
-            if (chapter < 2) {
-                printf("Refused: requires chapter >= 2.\n\nPress any key.\n");
-                wait_key();
-            } else if (ctx.size < 0x2F064) {
-                printf("Refused: save too small (?).\n\nPress any key.\n");
-                wait_key();
-            } else {
-                printf("Undo only via backup restore (SELECT).\n\n");
-                printf("A: unlock   B: cancel\n");
-                if (wait_key() & KEY_A) {
-                    printf("\nBacking up original save to SD...\n");
-                    if (!backup_save(&ctx)) {
-                        printf("Backup FAILED, not touching the save.\n");
-                    } else {
-                        for (u32 i = 0; i < sizeof(UNLOCK_REGIONS) / sizeof(*UNLOCK_REGIONS); i++)
-                            memcpy(ctx.plain + UNLOCK_REGIONS[i].offset,
-                                   UNLOCK_REGIONS[i].data, UNLOCK_REGIONS[i].len);
-                        if (commit_plain(&ctx))
-                            printf("Unlocked and committed. Check the\nInalink in-game.\n");
-                        else
-                            printf("WRITE FAILED. Save may be untouched;\nbackup is on SD either way.\n");
-                    }
-                    printf("\nPress any key.\n");
-                    wait_key();
-                }
-            }
-            dirty = true;
-            continue;
+        if (k & KEY_UP)    { cursor = (cursor + MENU_ITEMS - 1) % MENU_ITEMS; dirty = true; }
+        if (k & KEY_DOWN)  { cursor = (cursor + 1) % MENU_ITEMS; dirty = true; }
+        if (cursor == 0) {
+            if (k & KEY_LEFT)  { if (sel > 0) sel--; dirty = true; }
+            if (k & KEY_RIGHT) { if (sel < max) sel++; dirty = true; }
         }
         if (k & KEY_A) {
-            consoleClear();
-            printf("Set link level %d -> %d\n\n", current, sel);
-            if (sel == 3) {
-                printf("Level 3 REQUIRES the version-exclusive\nteam beaten. Glitched save otherwise.\n\n");
-                printf("A: I beat it, proceed   B: cancel\n");
-                if (!(wait_key() & KEY_A)) { dirty = true; continue; }
-            } else {
-                printf("A: confirm   B: cancel\n");
-                if (!(wait_key() & KEY_A)) { dirty = true; continue; }
-            }
-            printf("\nBacking up original save to SD...\n");
-            if (!backup_save(&ctx)) {
-                printf("Backup FAILED, not touching the save.\n");
-            } else if ((ctx.plain[LINK_OFFSET] = (u8)sel), commit_plain(&ctx)) {
-                current = sel;
-                printf("Patched and committed. Start the game\nand check the Inalink.\n");
-            } else {
-                printf("WRITE FAILED. Save may be untouched;\nbackup is on SD either way.\n");
-            }
-            printf("\nPress any key.\n");
-            wait_key();
             dirty = true;
+            if (cursor == 3) break;
+            if (cursor == 0) {
+                char msg[128];
+                snprintf(msg, sizeof(msg), "Set link level %d -> %d?%s", current, sel,
+                         (sel == 3) ? "\n\nLevel 3 REQUIRES the version-exclusive\nteam beaten. Glitched save otherwise." : "");
+                if (!dialog((sel == 3) ? "I beat it, proceed" : "confirm", msg, sel == 3))
+                    continue;
+                printf("\n Backing up original save to SD...\n");
+                if (!backup_save(&ctx)) {
+                    notice("Backup FAILED, save untouched.", false);
+                } else if ((ctx.plain[LINK_OFFSET] = (u8)sel), commit_plain(&ctx)) {
+                    current = sel;
+                    notice("Patched. Check the Inalink in-game.", true);
+                } else {
+                    notice("WRITE FAILED. Backup is on SD.", false);
+                }
+            } else if (cursor == 1) {
+                if (chapter < 2) {
+                    header();
+                    notice("Refused: requires chapter >= 2.", false);
+                    continue;
+                }
+                if (ctx.size < 0x2F064) {
+                    header();
+                    notice("Refused: save too small (?).", false);
+                    continue;
+                }
+                if (!dialog("unlock", "Unlock ALL data download + QR +\nGO/CS link (SD Link) content?\n\nUndo only via backup restore.", false))
+                    continue;
+                printf("\n Backing up original save to SD...\n");
+                if (!backup_save(&ctx)) {
+                    notice("Backup FAILED, save untouched.", false);
+                } else {
+                    for (u32 i = 0; i < sizeof(UNLOCK_REGIONS) / sizeof(*UNLOCK_REGIONS); i++)
+                        memcpy(ctx.plain + UNLOCK_REGIONS[i].offset,
+                               UNLOCK_REGIONS[i].data, UNLOCK_REGIONS[i].len);
+                    if (commit_plain(&ctx))
+                        notice("Unlocked. Check the Inalink in-game.", true);
+                    else
+                        notice("WRITE FAILED. Backup is on SD.", false);
+                }
+            } else if (cursor == 2) {
+                if (!dialog("restore", "Restore newest backup from\nsd:" BACKUP_DIR "\nover the current save?", false))
+                    continue;
+                if (restore_backup(&ctx)) {
+                    notice("Restored. Relaunch before patching.", true);
+                    break;
+                }
+                notice("RESTORE FAILED, see log.", false);
+            }
         }
         gfxFlushBuffers();
         gfxSwapBuffers();

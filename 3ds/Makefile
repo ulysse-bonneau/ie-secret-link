@@ -31,7 +31,7 @@ include $(DEVKITARM)/3ds_rules
 #     - icon.png
 #     - <libctru folder>/default_icon.png
 #---------------------------------------------------------------------------------
-TARGET		:=	ie-secret-link
+TARGET		:=	iesm
 BUILD		:=	build
 SOURCES		:=	source
 DATA		:=	data
@@ -41,8 +41,8 @@ GFXBUILD	:=	$(BUILD)
 #ROMFS		:=	romfs
 #GFXBUILD	:=	$(ROMFS)/gfx
 
-APP_TITLE		:=	ie-secret-link
-APP_DESCRIPTION	:=	Secret link patcher for IE GO Galaxy
+APP_TITLE		:=	IESM
+APP_DESCRIPTION	:=	Inazuma Eleven Save Manager
 APP_AUTHOR		:=	ulysse-bonneau
 ICON			:=	assets/icon.png
 APP_PRODUCT_CODE	:=	CTR-P-IESL
