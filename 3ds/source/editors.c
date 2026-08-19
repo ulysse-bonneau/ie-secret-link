@@ -27,6 +27,39 @@ static bool name_match(const char *name, const char *filt)
     return false;
 }
 
+static int pick_cmp(const void *a, const void *b)
+{
+    const char *x = *(const char *const *)a, *y = *(const char *const *)b;
+    while (*x && *y) {
+        int cx = (*x >= 'a' && *x <= 'z') ? *x - 32 : *x;
+        int cy = (*y >= 'a' && *y <= 'z') ? *y - 32 : *y;
+        if (cx != cy) return cx - cy;
+        x++; y++;
+    }
+    return (int)(u8)*x - (int)(u8)*y;
+}
+
+static int pick_cmp_idx(const void *a, const void *b)
+{
+    return pick_cmp(&pick_lines[*(const int *)a], &pick_lines[*(const int *)b]);
+}
+
+/* labels start with a group tag, so sorting groups then orders by name */
+static void pick_sort(int n)
+{
+    static int order[PICK_MAX];
+    static const char *tmp_lines[PICK_MAX];
+    static const void *tmp_ptr[PICK_MAX];
+    for (int i = 0; i < n; i++) order[i] = i;
+    qsort(order, n, sizeof(int), pick_cmp_idx);
+    for (int i = 0; i < n; i++) {
+        tmp_lines[i] = pick_lines[order[i]];
+        tmp_ptr[i] = pick_ptr[order[i]];
+    }
+    memcpy(pick_lines, tmp_lines, (size_t)n * sizeof(*pick_lines));
+    memcpy(pick_ptr, tmp_ptr, (size_t)n * sizeof(*pick_ptr));
+}
+
 /* ---- secret link ---- */
 
 bool link_apply(SaveCtx *ctx, int sel)
@@ -1028,6 +1061,15 @@ static const ItemInfo *item_db_picker(SaveCtx *ctx, int sub)
     }
     return NULL;
 }
+
+#define MAX_ITEMS 1100
+
+static const char *SUBCAT_NAMES[24] = {
+    "Other", "Boots", "Gloves", "Bracelets", "Pendants", "Celebrations",
+    "Consumables", "Shoot moves", "Dribble moves", "Block moves", "Save moves",
+    "Skills", "Key items", "PalPack", "Topics", "Photos", "Formations",
+    "Coaches", "Tactics", "Kits", "Emblems", "Spirits", "Totems", "PalPack Cards",
+};
 
 static void inventory_items(SaveCtx *ctx, int sub)
 {
