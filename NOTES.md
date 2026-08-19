@@ -82,3 +82,17 @@ The editor's "Unlock Data Download + QRcode + Link with GO/CS Content" button
 
 Ported verbatim into `3ds/source/unlock_data.h` (generated from the C# source).
 Blanket unlock — the editor does not split IE1/2/3 vs GO vs CS link content.
+
+## Player block (Galaxy, 250 bytes each, 336 slots at 0xF83C)
+
+Field offsets inside a block (from IEGOGalaxyHelper.PlayerBlock, Pack=1):
+ID u32 @ +8 (0 = empty slot), GP s16 @ +28, TP s16 @ +30, Freedom s16 @ +32,
+Level u8 @ +34, InvestedPoint s16[8] @ +52, AvatarID u32 @ +68,
+equipment indexes s32[4] @ +76, moves 6x9 bytes @ +96.
+Player name/pos/element database generated from Players.cs (Galaxy dict, 2024
+entries) into `3ds/source/players_db.h` by `tools/gen_players.py`.
+
+## Save info fields
+
+Name @ 0x3C, team name @ 0x5C (32-byte fields, `00 88` terminated),
+play time i32 seconds @ 0x20, prestige i32 @ 0x268D0, coins s16[5] @ 0x26CC8.
