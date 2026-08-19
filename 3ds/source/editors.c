@@ -664,8 +664,11 @@ static void edit_player(SaveCtx *ctx, u32 blk, const PlayerInfo *pi)
         const char *lines[17];
         for (int i = 0; i < 17; i++) lines[i] = rows[i];
 
+        char ptitle[48];
+        snprintf(ptitle, sizeof(ptitle), "%s%s", pi->name,
+                 (level < 99) ? "  (~ = estimate)" : "");
         int delta = 0;
-        int pick = ui_list_adj(pi->name, lines, 17, cursor, &delta);
+        int pick = ui_list_adj(ptitle, lines, 17, cursor, &delta);
         if (pick < 0) return;
         cursor = pick;
 
@@ -1351,11 +1354,7 @@ static void recap_players(SaveCtx *ctx, const u8 *old)
             s16 oi = b16(old, blk + g->p_invest_off + s * 2);
             s16 ni = b16(ctx->plain, blk + g->p_invest_off + s * 2);
             if (oi == ni) continue;
-            if (np)
-                remit("%.12s %s %d -> %d", nm, STAT_NAMES[s],
-                      stat_base(np, s, olv) + oi, stat_base(np, s, nlv) + ni);
-            else
-                remit("%.12s %s %+d -> %+d", nm, STAT_NAMES[s], oi, ni);
+            remit("%.14s %s %+d -> %+d", nm, STAT_NAMES[s], oi, ni);
         }
         if (memcmp(old + blk + g->p_moves_off, ctx->plain + blk + g->p_moves_off, 72))
             remit("%.24s: moves changed", nm);
@@ -1435,7 +1434,7 @@ bool apply_changes(SaveCtx *ctx)
     free(old);
     if (other) remit("unlock/other flags: %lu byte(s)", (unsigned long)other);
     if (rl_over) remit("...and %d more (see log.txt)", rl_over);
-    if (players_touched) remit("(GP/TP + stats approx below Lv 99)");
+    if (players_touched) remit("(GP/TP approx below Lv 99)");
 
     const char *lines[64];
     for (int i = 0; i < rl_n; i++) lines[i] = rl[i];
