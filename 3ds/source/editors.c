@@ -1,6 +1,8 @@
+#include <dirent.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include "app.h"
 #include "codec.h"
 
@@ -1445,6 +1447,234 @@ static const char *roster_name(SaveCtx *ctx, int ridx, char *buf, size_t bufsz)
     return buf;
 }
 
+
+/* ---- team bank (sd:/IESM/teams) ---- */
+
+#define TEAMS_DIR "/IESM/teams"
+
+typedef struct {
+    char magic[4];   /* "IETM" */
+    u8 ver, pad;
+    u16 game_magic;
+    char name[32];
+    u32 item_ids[4]; /* coach, formation, kit, emblem (0 = none) */
+    u8 positions[16];
+    u8 kitnums[16];
+    u32 player_ids[16];
+} TeamBankFile;
+
+static u32 item_index_to_id(SaveCtx *ctx, int idx)
+{
+    const GameDef *g = ctx->game;
+    if (!idx) return 0;
+    for (int grp = 0; grp < 3; grp++) {
+        u32 base = (grp == 0) ? g->g1_off : (grp == 1) ? g->g2_off : g->g3_off;
+        u32 stride = (grp == 0) ? 12 : (grp == 1) ? 16 : 8;
+        int cnt = (grp == 0) ? g->g1_n : (grp == 1) ? g->g2_n : g->g3_n;
+        for (int i = 0; i < cnt; i++) {
+            u32 e = base + (u32)i * stride;
+            if (rd32(ctx, e) != idx) continue;
+            u32 id;
+            memcpy(&id, ctx->plain + e + 4, 4);
+            return id;
+        }
+    }
+    return 0;
+}
+
+static int item_id_to_index(SaveCtx *ctx, u32 id)
+{
+    const GameDef *g = ctx->game;
+    if (!id) return 0;
+    for (int grp = 0; grp < 3; grp++) {
+        u32 base = (grp == 0) ? g->g1_off : (grp == 1) ? g->g2_off : g->g3_off;
+        u32 stride = (grp == 0) ? 12 : (grp == 1) ? 16 : 8;
+        int cnt = (grp == 0) ? g->g1_n : (grp == 1) ? g->g2_n : g->g3_n;
+        for (int i = 0; i < cnt; i++) {
+            u32 e = base + (u32)i * stride;
+            u32 v;
+            memcpy(&v, ctx->plain + e + 4, 4);
+            if (v == id) return rd32(ctx, e);
+        }
+    }
+    return 0;
+}
+
+static u32 ridx_to_player_id(SaveCtx *ctx, int ridx)
+{
+    const GameDef *g = ctx->game;
+    if (!ridx) return 0;
+    for (int i = 0; i < g->pmax; i++) {
+        u32 blk = g->pdata_off + (u32)i * g->pblock;
+        if (rd32(ctx, blk + g->p_id_off - 4) != ridx) continue;
+        u32 id;
+        memcpy(&id, ctx->plain + blk + g->p_id_off, 4);
+        return id;
+    }
+    return 0;
+}
+
+static int player_id_to_ridx(SaveCtx *ctx, u32 id)
+{
+    const GameDef *g = ctx->game;
+    if (!id) return 0;
+    for (int i = 0; i < g->pmax; i++) {
+        u32 blk = g->pdata_off + (u32)i * g->pblock;
+        u32 v;
+        memcpy(&v, ctx->plain + blk + g->p_id_off, 4);
+        if (v == id) return rd32(ctx, blk + g->p_id_off - 4);
+    }
+    return 0;
+}
+
+static void bank_store(SaveCtx *ctx, int t)
+{
+    const GameDef *g = ctx->game;
+    u32 info = g->t_info + (u32)t * g->t_info_str;
+    u32 players = g->t_players + (u32)t * 0x40;
+
+    TeamBankFile f;
+    memset(&f, 0, sizeof(f));
+    memcpy(f.magic, "IETM", 4);
+    f.ver = 1;
+    f.game_magic = g->magic;
+    if (g->t_name)
+        read_name_buf(ctx->plain, g->t_name + (u32)t * g->t_name_str, f.name, sizeof(f.name));
+    for (int s = 0; s < 4; s++)
+        f.item_ids[s] = item_index_to_id(ctx, rd32(ctx, info + (u32)s * 4));
+    memcpy(f.positions, ctx->plain + info + 16, 16);
+    memcpy(f.kitnums, ctx->plain + info + 32, 16);
+    for (int s = 0; s < 16; s++)
+        f.player_ids[s] = ridx_to_player_id(ctx, rd32(ctx, players + (u32)s * 4));
+
+    char def[40];
+    if (f.name[0]) snprintf(def, sizeof(def), "%.30s", f.name);
+    else snprintf(def, sizeof(def), "team-%c", 'A' + t);
+    char name[40];
+    if (!ui_text("Bank entry name", def, name, sizeof(name))) return;
+    mkdir(TEAMS_DIR, 0777);
+    char path[0x300];
+    snprintf(path, sizeof(path), TEAMS_DIR "/%s.iet", name);
+    FILE *out = fopen(path, "wb");
+    bool ok = out && fwrite(&f, 1, sizeof(f), out) == sizeof(f);
+    if (out) fclose(out);
+    if (ok) logline("team banked: sd:%s", path);
+    ui_header();
+    ui_notice(ok ? "Team saved to the bank." : "Bank write FAILED.", ok);
+}
+
+static void bank_restore(SaveCtx *ctx, const TeamBankFile *f, int t)
+{
+    const GameDef *g = ctx->game;
+    u32 info = g->t_info + (u32)t * g->t_info_str;
+    u32 players = g->t_players + (u32)t * 0x40;
+
+    int miss_p = 0, miss_i = 0;
+    for (int s = 0; s < 4; s++) {
+        int idx = item_id_to_index(ctx, f->item_ids[s]);
+        if (f->item_ids[s] && !idx) miss_i++;
+        wr32(ctx, info + (u32)s * 4, idx);
+    }
+    memcpy(ctx->plain + info + 16, f->positions, 16);
+    memcpy(ctx->plain + info + 32, f->kitnums, 16);
+    for (int s = 0; s < 16; s++) {
+        int ridx = player_id_to_ridx(ctx, f->player_ids[s]);
+        if (f->player_ids[s] && !ridx) miss_p++;
+        wr32(ctx, players + (u32)s * 4, ridx);
+    }
+    if (g->t_name && f->name[0]) {
+        u32 off = g->t_name + (u32)t * g->t_name_str;
+        memset(ctx->plain + off, 0, g->t_name_str);
+        size_t l = strlen(f->name);
+        if (l > g->t_name_str - 2) l = g->t_name_str - 2;
+        memcpy(ctx->plain + off, f->name, l);
+        ctx->plain[off + l + 1] = 0x88;
+    }
+    ui_header();
+    char msg[96];
+    if (miss_p || miss_i)
+        snprintf(msg, sizeof(msg), "Restored. Missing from this save:\n%d player(s), %d item(s) left empty.", miss_p, miss_i);
+    else
+        snprintf(msg, sizeof(msg), "Team restored into slot %d.", t + 1);
+    ui_notice(msg, true);
+}
+
+static int pick_team_slot(SaveCtx *ctx, const char *title)
+{
+    const GameDef *g = ctx->game;
+    char rows[10][48];
+    const char *lines[10];
+    for (int t = 0; t < g->t_count; t++) {
+        char tn[32] = "";
+        if (g->t_name)
+            read_name_buf(ctx->plain, g->t_name + (u32)t * g->t_name_str, tn, sizeof(tn));
+        snprintf(rows[t], 48, "%d  %s", t + 1, tn[0] ? tn : "(unnamed)");
+        lines[t] = rows[t];
+    }
+    return ui_list(title, lines, g->t_count, 0);
+}
+
+static void team_bank(SaveCtx *ctx)
+{
+    mkdir(TEAMS_DIR, 0777);
+    int cursor = 0;
+    while (aptMainLoop()) {
+        static char names[64][48];
+        int n = 0;
+        DIR *d = opendir(TEAMS_DIR);
+        if (d) {
+            struct dirent *e;
+            while ((e = readdir(d)) && n < 64) {
+                size_t l = strlen(e->d_name);
+                if (l > 4 && l < 48 && !strcmp(e->d_name + l - 4, ".iet"))
+                    snprintf(names[n++], 48, "%s", e->d_name);
+            }
+            closedir(d);
+        }
+        if (!n) {
+            ui_header();
+            ui_notice("Bank empty. In the team list,\npress X on a team to store it.", false);
+            return;
+        }
+        const char *lines[64];
+        for (int i = 0; i < n; i++) lines[i] = names[i];
+        int pick = ui_list("Team bank", lines, n, cursor);
+        if (pick < 0) return;
+        cursor = pick;
+
+        char path[0x300];
+        snprintf(path, sizeof(path), TEAMS_DIR "/%s", names[pick]);
+        TeamBankFile f;
+        FILE *in = fopen(path, "rb");
+        bool ok = in && fread(&f, 1, sizeof(f), in) == sizeof(f) && !memcmp(f.magic, "IETM", 4);
+        if (in) fclose(in);
+        if (!ok) {
+            ui_header();
+            ui_notice("Unreadable bank file.", false);
+            continue;
+        }
+
+        const char *acts[] = { "Restore into a team slot", "Delete", "Back" };
+        int a = ui_list(names[pick], acts, 3, 0);
+        if (a == 0) {
+            if (f.game_magic != ctx->game->magic) {
+                ui_header();
+                ui_notice("Refused: team from another game.", false);
+                continue;
+            }
+            int t = pick_team_slot(ctx, "Restore into which team?");
+            if (t < 0) continue;
+            char msg[96];
+            snprintf(msg, sizeof(msg), "Overwrite team slot %d with\n%.32s?", t + 1, names[pick]);
+            if (ui_dialog("restore", msg, false)) bank_restore(ctx, &f, t);
+        } else if (a == 1) {
+            char msg[96];
+            snprintf(msg, sizeof(msg), "Delete %.32s permanently?", names[pick]);
+            if (ui_dialog("delete", msg, true)) remove(path);
+        }
+    }
+}
+
 static void team_edit(SaveCtx *ctx, int t)
 {
     const GameDef *g = ctx->game;
@@ -1456,8 +1686,8 @@ static void team_edit(SaveCtx *ctx, int t)
     int cursor = 0;
 
     while (aptMainLoop()) {
-        char rows[21][48];
-        const char *lines[21];
+        char rows[22][48];
+        const char *lines[22];
         int n = 0;
         char tname[32] = "";
         if (nameoff) {
@@ -1474,11 +1704,14 @@ static void team_edit(SaveCtx *ctx, int t)
         }
         for (int s = 0; s < 16; s++) {
             char nb[16];
-            snprintf(rows[n], 48, "%2d  %s", s + 1,
+            snprintf(rows[n], 48, "#%-2d %s", ctx->plain[info + 32 + s],
                      roster_name(ctx, rd32(ctx, players + (u32)s * 4), nb, sizeof(nb)));
             lines[n] = rows[n];
             n++;
         }
+        snprintf(rows[n], 48, "[ Swap two pitch positions ]");
+        lines[n] = rows[n];
+        n++;
 
         int delta = 0;
         int pick = ui_list_adj(tname[0] ? tname : "Custom team", lines, n, cursor, &delta);
@@ -1502,10 +1735,31 @@ static void team_edit(SaveCtx *ctx, int t)
             if (delta) continue;
             int idx = owned_item_picker(ctx, slot_subs[s], slot_names[s]);
             if (idx) wr32(ctx, info + (u32)s * 4, idx);
+        } else if (pick == base + 4 + 16) {
+            /* swap the formation-position values of two roster entries,
+             * exactly what the PC editor's drag-swap does */
+            if (delta) continue;
+            int a = ui_list("Swap: first roster slot", lines + base + 4, 16, 0);
+            if (a < 0) continue;
+            int b2 = ui_list("Swap: second roster slot", lines + base + 4, 16, 0);
+            if (b2 < 0 || a == b2) continue;
+            u8 tmp = ctx->plain[info + 16 + a];
+            ctx->plain[info + 16 + a] = ctx->plain[info + 16 + b2];
+            ctx->plain[info + 16 + b2] = tmp;
         } else {
             int s = pick - base - 4;
             if (delta == 2) { wr32(ctx, players + (u32)s * 4, 0); continue; }
-            if (delta) continue;
+            if (delta == 1 || delta == -1) {
+                int kn = ctx->plain[info + 32 + s] + delta;
+                if (kn >= 1 && kn <= 99) ctx->plain[info + 32 + s] = (u8)kn;
+                continue;
+            }
+            if (delta == 3) {
+                int v;
+                if (ui_number("Kit number (1-99)", ctx->plain[info + 32 + s], 1, 99, &v))
+                    ctx->plain[info + 32 + s] = (u8)v;
+                continue;
+            }
             int ridx = reserve_picker(ctx);
             if (!ridx) continue;
             bool dup = false;
@@ -1536,22 +1790,31 @@ void teams_editor(SaveCtx *ctx)
 
     int cursor = 0;
     while (aptMainLoop()) {
-        char rows[10][48];
-        const char *lines[10];
+        char rows[11][48];
+        const char *lines[11];
+        snprintf(rows[0], 48, "[ Team bank (X on a team: store) ]");
+        lines[0] = rows[0];
         for (int t = 0; t < g->t_count; t++) {
             char tname[32] = "";
             if (g->t_name)
                 read_name_buf(ctx->plain, g->t_name + (u32)t * g->t_name_str, tname, sizeof(tname));
             if (tname[0])
-                snprintf(rows[t], 48, "%d  %s", t + 1, tname);
+                snprintf(rows[t + 1], 48, "%d  %s", t + 1, tname);
             else
-                snprintf(rows[t], 48, "%d  Team %c", t + 1, 'A' + t);
-            lines[t] = rows[t];
+                snprintf(rows[t + 1], 48, "%d  Team %c", t + 1, 'A' + t);
+            lines[t + 1] = rows[t + 1];
         }
-        int pick = ui_list("Custom teams (B: back)", lines, g->t_count, cursor);
+        int delta = 0;
+        int pick = ui_list_adj("Custom teams (B: back)", lines, g->t_count + 1, cursor, &delta);
         if (pick < 0) break;
         cursor = pick;
-        team_edit(ctx, pick);
+        if (pick == 0) {
+            if (!delta) team_bank(ctx);
+            continue;
+        }
+        if (delta == 2) { bank_store(ctx, pick - 1); continue; }
+        if (delta) continue;
+        team_edit(ctx, pick - 1);
     }
 
     if (memcmp(snap, ctx->plain, ctx->size) != 0) {
