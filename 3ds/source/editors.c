@@ -346,10 +346,12 @@ static const signed char SEESAW[4][8] = {
     /* FW */ { 2, 3, 0, 1, 5, 4, 7, 6 },
 };
 
+/* the reference data only contains each stat's value at Lv 99 (untrained);
+ * real growth curves live in the game ROM, so no per-level estimate is shown */
 static int stat_base(const PlayerInfo *pi, int i, int level)
 {
-    int v = pi->st[i] * level / 99;
-    return (v < 1) ? 1 : v;
+    (void)level;
+    return pi->st[i];
 }
 
 static int pos_index(const PlayerInfo *pi)
@@ -732,7 +734,7 @@ static void edit_player(SaveCtx *ctx, u32 blk, const PlayerInfo *pi)
 
         char ptitle[48];
         snprintf(ptitle, sizeof(ptitle), "%s%s", pi->name,
-                 (level < 99) ? " (stats exact at 99 only)" : "");
+                 (level < 99) ? " (bases = Lv99 values)" : "");
         int delta = 0;
         int pick = ui_list_adj(ptitle, lines, 17, cursor, &delta);
         if (pick < 0) return;
@@ -1745,7 +1747,7 @@ bool apply_changes(SaveCtx *ctx)
     free(old);
     if (other) remit("unlock/other flags: %lu byte(s)", (unsigned long)other);
     if (rl_over) remit("...and %d more (see log.txt)", rl_over);
-    if (players_touched) remit("(stats exact at 99 only)");
+    if (players_touched) remit("(GP/TP approx below Lv 99)");
 
     const char *lines[64];
     for (int i = 0; i < rl_n; i++) lines[i] = rl[i];
