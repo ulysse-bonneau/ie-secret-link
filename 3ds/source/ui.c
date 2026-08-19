@@ -64,12 +64,13 @@ int ui_list(const char *title, const char *const *lines, int n, int cursor)
         }
         hidScanInput();
         u32 k = hidKeysDown();
+        u32 kr = hidKeysDownRepeat();
         if (k & KEY_A) return cursor;
         if (k & (KEY_B | KEY_START)) return -1;
-        if (k & KEY_UP)    { cursor = (cursor + n - 1) % n; dirty = true; }
-        if (k & KEY_DOWN)  { cursor = (cursor + 1) % n; dirty = true; }
-        if (k & (KEY_LEFT | KEY_L))  { cursor -= LIST_ROWS; if (cursor < 0) cursor = 0; dirty = true; }
-        if (k & (KEY_RIGHT | KEY_R)) { cursor += LIST_ROWS; if (cursor >= n) cursor = n - 1; dirty = true; }
+        if (kr & KEY_UP)    { cursor = (cursor + n - 1) % n; dirty = true; }
+        if (kr & KEY_DOWN)  { cursor = (cursor + 1) % n; dirty = true; }
+        if (kr & (KEY_LEFT | KEY_L))  { cursor -= LIST_ROWS; if (cursor < 0) cursor = 0; dirty = true; }
+        if (kr & (KEY_RIGHT | KEY_R)) { cursor += LIST_ROWS; if (cursor >= n) cursor = n - 1; dirty = true; }
         gfxFlushBuffers();
         gfxSwapBuffers();
         gspWaitForVBlank();
@@ -127,14 +128,15 @@ int ui_list_adj(const char *title, const char *const *lines, int n, int cursor, 
         }
         hidScanInput();
         u32 k = hidKeysDown();
+        u32 kr = hidKeysDownRepeat();
         if (k & KEY_A) { *delta = 0; return cursor; }
         if (k & (KEY_B | KEY_START)) return -1;
-        if (k & KEY_UP)    { cursor = (cursor + n - 1) % n; dirty = true; }
-        if (k & KEY_DOWN)  { cursor = (cursor + 1) % n; dirty = true; }
-        if (k & KEY_LEFT)  { *delta = -1; return cursor; }
-        if (k & KEY_RIGHT) { *delta = +1; return cursor; }
-        if (k & KEY_L) { cursor -= LIST_ROWS; if (cursor < 0) cursor = 0; dirty = true; }
-        if (k & KEY_R) { cursor += LIST_ROWS; if (cursor >= n) cursor = n - 1; dirty = true; }
+        if (kr & KEY_UP)    { cursor = (cursor + n - 1) % n; dirty = true; }
+        if (kr & KEY_DOWN)  { cursor = (cursor + 1) % n; dirty = true; }
+        if (kr & KEY_LEFT)  { *delta = -1; return cursor; }
+        if (kr & KEY_RIGHT) { *delta = +1; return cursor; }
+        if (kr & KEY_L) { cursor -= LIST_ROWS; if (cursor < 0) cursor = 0; dirty = true; }
+        if (kr & KEY_R) { cursor += LIST_ROWS; if (cursor >= n) cursor = n - 1; dirty = true; }
         gfxFlushBuffers();
         gfxSwapBuffers();
         gspWaitForVBlank();

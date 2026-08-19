@@ -77,9 +77,10 @@ void link_level_editor(SaveCtx *ctx)
         }
         hidScanInput();
         u32 k = hidKeysDown();
+        u32 kr = hidKeysDownRepeat();
         if (k & (KEY_B | KEY_START)) return;
-        if (k & KEY_LEFT)  { if (sel > 0) sel--; dirty = true; }
-        if (k & KEY_RIGHT) { if (sel < max) sel++; dirty = true; }
+        if (kr & KEY_LEFT)  { if (sel > 0) sel--; dirty = true; }
+        if (kr & KEY_RIGHT) { if (sel < max) sel++; dirty = true; }
         if ((k & KEY_A) && sel != current) {
             if (link_apply(ctx, sel)) return;
             current = ctx->plain[g->link_off];
@@ -176,7 +177,8 @@ void saveinfo_editor(SaveCtx *ctx)
         const char *lines[10];
         for (int i = 0; i < n; i++) lines[i] = rows[i];
 
-        int pick = ui_list("Save info (B: back)", lines, n, cursor);
+        int delta = 0;
+        int pick = ui_list_adj("Save info (B: back)", lines, n, cursor, &delta);
         if (pick < 0) break;
         cursor = pick;
 
@@ -184,35 +186,51 @@ void saveinfo_editor(SaveCtx *ctx)
         char text[32];
         switch (fields[pick]) {
         case F_NAME:
-            if (ui_text("Player name", name, text, 22)) { write_name(ctx, g->name_off, text); modified = true; }
+            if (!delta && ui_text("Player name", name, text, 22)) { write_name(ctx, g->name_off, text); modified = true; }
             break;
         case F_TEAM:
-            if (ui_text("Team name", team, text, 22)) { write_name(ctx, g->team_off, text); modified = true; }
+            if (!delta && ui_text("Team name", team, text, 22)) { write_name(ctx, g->team_off, text); modified = true; }
             break;
         case F_TIME:
-            if (ui_number("Play time: hours", secs / 3600, 0, 999, &v)) {
-                wr32(ctx, g->time_off, v * 3600 + (secs / 60 % 60) * 60);
-                modified = true;
+            v = secs / 3600 + delta;
+            if (delta) {
+                if (v < 0 || v > 999) break;
+            } else if (!ui_number("Play time: hours", secs / 3600, 0, 999, &v)) {
+                break;
             }
+            wr32(ctx, g->time_off, v * 3600 + (secs / 60 % 60) * 60);
+            modified = true;
             break;
         case F_PRESTIGE:
-            if (ui_number("Prestige points", rd32(ctx, g->money_off), 0, 9999999, &v)) {
-                wr32(ctx, g->money_off, v);
-                modified = true;
+            v = rd32(ctx, g->money_off) + delta * 100;
+            if (delta) {
+                if (v < 0 || v > 9999999) break;
+            } else if (!ui_number("Prestige points", rd32(ctx, g->money_off), 0, 9999999, &v)) {
+                break;
             }
+            wr32(ctx, g->money_off, v);
+            modified = true;
             break;
         case F_FRIEND:
-            if (ui_number("Friendship points", rd32(ctx, g->money_off + 4), 0, 9999999, &v)) {
-                wr32(ctx, g->money_off + 4, v);
-                modified = true;
+            v = rd32(ctx, g->money_off + 4) + delta * 100;
+            if (delta) {
+                if (v < 0 || v > 9999999) break;
+            } else if (!ui_number("Friendship points", rd32(ctx, g->money_off + 4), 0, 9999999, &v)) {
+                break;
             }
+            wr32(ctx, g->money_off + 4, v);
+            modified = true;
             break;
         default: {
             int i = fields[pick] - F_COIN0;
-            if (ui_number(coin_names[i], rd16(ctx, g->coin_off + i * 2), 0, 9999, &v)) {
-                wr16(ctx, g->coin_off + i * 2, (s16)v);
-                modified = true;
+            v = rd16(ctx, g->coin_off + i * 2) + delta;
+            if (delta) {
+                if (v < 0 || v > 9999) break;
+            } else if (!ui_number(coin_names[i], rd16(ctx, g->coin_off + i * 2), 0, 9999, &v)) {
+                break;
             }
+            wr16(ctx, g->coin_off + i * 2, (s16)v);
+            modified = true;
             break;
         }
         }
@@ -289,6 +307,9 @@ static bool train_plus(SaveCtx *ctx, u32 blk, const PlayerInfo *pi, int i)
     }
     int p = pos_index(pi);
     int victim = (p >= 0) ? SEESAW[p][i] : -1;
+    if (victim >= 0 &&
+        pi->st[victim] + rd16(ctx, blk + g->p_invest_off + victim * 2) - 1 < 1)
+        return false;
     if (victim < 0) {
         /* pair unknown: let the user choose the stat to lower */
         const char *lines[8];
@@ -420,14 +441,15 @@ static void edit_player(SaveCtx *ctx, u32 blk, const PlayerInfo *pi)
             } else if (delta < 0) {
                 /* untrain: give the point back to freedom, capped at the max */
                 if (freedom >= pi->freedom) continue;
+                if (pi->st[i] + inv[i] - 1 < 1) continue;
                 wr16(ctx, blk + g->p_invest_off + i * 2, (s16)(inv[i] - 1));
                 wr16(ctx, blk + gp + 4, (s16)(freedom + 1));
             } else {
                 int base = pi->st[i];
                 char hint[64];
                 snprintf(hint, sizeof(hint), "%s target (base %d)", STAT_NAMES[i], base);
-                int lo = base - 99; if (lo < 0) lo = 0;
-                if (!ui_number(hint, base + inv[i], lo, base + 199, &v)) continue;
+                int hi = base + inv[i] + freedom;
+                if (!ui_number(hint, base + inv[i], 1, hi, &v)) continue;
                 int ninv = v - base;
                 int nsum = inv_sum - inv[i] + ninv;
                 if (nsum > budget) {

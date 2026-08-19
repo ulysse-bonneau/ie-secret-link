@@ -236,6 +236,7 @@ static const SaveEntry *save_picker(void)
 int main(void)
 {
     gfxInitDefault();
+    hidSetRepeatParameters(18, 4);
     consoleInit(GFX_TOP, &topcon);
     consoleInit(GFX_BOTTOM, &botcon);
     consoleSelect(&topcon);

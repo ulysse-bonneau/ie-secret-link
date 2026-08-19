@@ -6,7 +6,7 @@
 #include "players_db.h"
 #include "items_db.h"
 
-#define VERSION "v0.8.0"
+#define VERSION "v0.8.2"
 
 #define BACKUP_DIR     "/IESM"
 #define OLD_BACKUP_DIR "/ie-secret-link"
