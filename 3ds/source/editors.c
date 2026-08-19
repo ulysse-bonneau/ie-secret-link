@@ -286,6 +286,12 @@ static const signed char SEESAW[4][8] = {
     /* FW */ { 2, 3, 0, 1, 5, 4, 7, 6 },
 };
 
+static int stat_base(const PlayerInfo *pi, int i, int level)
+{
+    int v = pi->st[i] * level / 99;
+    return (v < 1) ? 1 : v;
+}
+
 static int pos_index(const PlayerInfo *pi)
 {
     if (!strcmp(pi->pos, "GK")) return 0;
@@ -308,7 +314,8 @@ static bool train_plus(SaveCtx *ctx, u32 blk, const PlayerInfo *pi, int i)
     int p = pos_index(pi);
     int victim = (p >= 0) ? SEESAW[p][i] : -1;
     if (victim >= 0 &&
-        pi->st[victim] + rd16(ctx, blk + g->p_invest_off + victim * 2) - 1 < 1)
+        stat_base(pi, victim, ctx->plain[blk + g->p_gp_off + 6]) +
+            rd16(ctx, blk + g->p_invest_off + victim * 2) - 1 < 1)
         return false;
     if (victim < 0) {
         /* pair unknown: let the user choose the stat to lower */
@@ -393,14 +400,17 @@ static void edit_player(SaveCtx *ctx, u32 blk, const PlayerInfo *pi)
         }
         int freedom = rd16(ctx, blk + gp + 4);
         int budget = freedom + inv_sum;
+        int level = ctx->plain[blk + gp + 6];
 
         char rows[14][48];
-        snprintf(rows[0], 48, "Level      %-4d (GP/TP exact at 99 only)", ctx->plain[blk + gp + 6]);
+        snprintf(rows[0], 48, "Level      %-4d (GP/TP exact at 99 only)", level);
         snprintf(rows[1], 48, "GP         %d", rd16(ctx, blk + gp));
         snprintf(rows[2], 48, "TP         %d", rd16(ctx, blk + gp + 2));
         snprintf(rows[3], 48, "Freedom left    %d", freedom);
-        for (int i = 0; i < 8; i++)
-            snprintf(rows[4 + i], 48, "%-9s %3d %+4d = %d", STAT_NAMES[i], pi->st[i], inv[i], pi->st[i] + inv[i]);
+        for (int i = 0; i < 8; i++) {
+            int b = stat_base(pi, i, level);
+            snprintf(rows[4 + i], 48, "%-9s %3d %+4d = %d", STAT_NAMES[i], b, inv[i], b + inv[i]);
+        }
         snprintf(rows[12], 48, "[ God mode (free edit) ]");
         snprintf(rows[13], 48, "[ Reset freedom & invested points ]");
         const char *lines[14];
@@ -439,24 +449,27 @@ static void edit_player(SaveCtx *ctx, u32 blk, const PlayerInfo *pi)
             if (delta > 0) {
                 train_plus(ctx, blk, pi, i);
             } else if (delta < 0) {
-                if (pi->st[i] + inv[i] - 1 < 1) continue;
-                if (freedom == 0) {
+                if (stat_base(pi, i, level) + inv[i] - 1 < 1) continue;
+                int p = pos_index(pi);
+                int pair_inv = 0;
+                int victim = -1;
+                if (p >= 0) {
+                    victim = SEESAW[p][i];
+                    pair_inv = rd16(ctx, blk + g->p_invest_off + victim * 2);
+                }
+                if (freedom == 0 && victim >= 0 && pair_inv != 0) {
                     /* seesaw down: the paired stat gains the point */
-                    int p = pos_index(pi);
-                    if (p >= 0) {
-                        int victim = SEESAW[p][i];
-                        wr16(ctx, blk + g->p_invest_off + i * 2, (s16)(inv[i] - 1));
-                        wr16(ctx, blk + g->p_invest_off + victim * 2,
-                             (s16)(rd16(ctx, blk + g->p_invest_off + victim * 2) + 1));
-                    }
+                    wr16(ctx, blk + g->p_invest_off + i * 2, (s16)(inv[i] - 1));
+                    wr16(ctx, blk + g->p_invest_off + victim * 2, (s16)(pair_inv + 1));
                 } else {
-                    /* untrain: give the point back to freedom, capped at the max */
+                    /* untrain: give the point back to freedom (pair at +0 also
+                     * refunds, so points can move to another stat pair) */
                     if (freedom >= pi->freedom) continue;
                     wr16(ctx, blk + g->p_invest_off + i * 2, (s16)(inv[i] - 1));
                     wr16(ctx, blk + gp + 4, (s16)(freedom + 1));
                 }
             } else {
-                int base = pi->st[i];
+                int base = stat_base(pi, i, level);
                 char hint[64];
                 snprintf(hint, sizeof(hint), "%s target (base %d)", STAT_NAMES[i], base);
                 int hi = base + inv[i] + freedom;
