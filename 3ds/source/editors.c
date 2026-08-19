@@ -107,10 +107,20 @@ void sdlink_unlock(SaveCtx *ctx)
 
 static void read_name(SaveCtx *ctx, u32 off, char *out, size_t outsz)
 {
-    size_t i = 0;
-    for (; i < outsz - 1 && i < NAME_FIELD_LEN && ctx->plain[off + i]; i++)
-        out[i] = (ctx->plain[off + i] < 0x80) ? (char)ctx->plain[off + i] : '?';
-    out[i] = 0;
+    size_t o = 0, i = 0;
+    while (o < outsz - 1 && i < NAME_FIELD_LEN && ctx->plain[off + i]) {
+        u8 c = ctx->plain[off + i];
+        if (c < 0x80) {
+            out[o++] = (char)c;
+            i++;
+        } else {
+            /* one placeholder per UTF-8 codepoint (JP names can't render) */
+            out[o++] = '?';
+            i++;
+            while (i < NAME_FIELD_LEN && (ctx->plain[off + i] & 0xC0) == 0x80) i++;
+        }
+    }
+    out[o] = 0;
 }
 
 static void write_name(SaveCtx *ctx, u32 off, const char *name)
@@ -218,28 +228,40 @@ static const PlayerInfo *player_info(const GameDef *g, u32 id)
     return NULL;
 }
 
-static void edit_player(SaveCtx *ctx, u32 blk, const PlayerInfo *pi)
+/* invested-point order mapped to Stat[2..9] per the reference editor */
+static const char *STAT_NAMES[8] = { "Kick", "Dribble", "Technique", "Block",
+                                     "Speed", "Stamina", "Catch", "Luck" };
+
+static void level_gp_tp(SaveCtx *ctx, u32 blk, const PlayerInfo *pi, int level)
 {
     const GameDef *g = ctx->game;
-    const char *pname = pi ? pi->name : "Unknown player";
-    static const char *inv_names[8] = { "Kick", "Dribble", "Block", "Catch",
-                                        "Technique", "Speed", "Stamina", "Lucky" };
+    ctx->plain[blk + g->p_gp_off + 6] = (u8)level;
+    if (pi && pi->gp) {
+        /* ponytail: linear growth approximation, exact at level 99 */
+        int gp = pi->gp * level / 99; if (gp < 1) gp = 1;
+        int tp = pi->tp * level / 99; if (tp < 1) tp = 1;
+        wr16(ctx, blk + g->p_gp_off, (s16)gp);
+        wr16(ctx, blk + g->p_gp_off + 2, (s16)tp);
+    }
+}
+
+static void god_mode(SaveCtx *ctx, u32 blk, const char *pname)
+{
+    const GameDef *g = ctx->game;
     u32 gp = g->p_gp_off;
     int cursor = 0;
     while (aptMainLoop()) {
-        char rows[13][48];
+        char rows[12][48];
         snprintf(rows[0], 48, "Level      %d", ctx->plain[blk + gp + 6]);
         snprintf(rows[1], 48, "GP         %d", rd16(ctx, blk + gp));
         snprintf(rows[2], 48, "TP         %d", rd16(ctx, blk + gp + 2));
         snprintf(rows[3], 48, "Freedom    %d", rd16(ctx, blk + gp + 4));
         for (int i = 0; i < 8; i++)
-            snprintf(rows[4 + i], 48, "+%-9s %d", inv_names[i], rd16(ctx, blk + g->p_invest_off + i * 2));
-        int n = 12;
-        if (pi) snprintf(rows[n++], 48, "[ Reset freedom & invested points ]");
-        const char *lines[13];
-        for (int i = 0; i < n; i++) lines[i] = rows[i];
+            snprintf(rows[4 + i], 48, "+%-9s %d", STAT_NAMES[i], rd16(ctx, blk + g->p_invest_off + i * 2));
+        const char *lines[12];
+        for (int i = 0; i < 12; i++) lines[i] = rows[i];
 
-        int pick = ui_list(pname, lines, n, cursor);
+        int pick = ui_list(pname, lines, 12, cursor);
         if (pick < 0) return;
         cursor = pick;
 
@@ -253,7 +275,82 @@ static void edit_player(SaveCtx *ctx, u32 blk, const PlayerInfo *pi)
             if (ui_number("TP", rd16(ctx, blk + gp + 2), 1, 999, &v)) wr16(ctx, blk + gp + 2, (s16)v);
         } else if (pick == 3) {
             if (ui_number("Freedom points", rd16(ctx, blk + gp + 4), 0, 9999, &v)) wr16(ctx, blk + gp + 4, (s16)v);
-        } else if (pick == 12) {
+        } else {
+            int i = pick - 4;
+            if (ui_number(STAT_NAMES[i], rd16(ctx, blk + g->p_invest_off + i * 2), 0, 255, &v))
+                wr16(ctx, blk + g->p_invest_off + i * 2, (s16)v);
+        }
+    }
+}
+
+static void edit_player(SaveCtx *ctx, u32 blk, const PlayerInfo *pi)
+{
+    const GameDef *g = ctx->game;
+    u32 gp = g->p_gp_off;
+
+    if (!pi) {
+        /* unknown ID: no base data, free editing only */
+        god_mode(ctx, blk, "Unknown player (god mode)");
+        return;
+    }
+
+    int cursor = 0;
+    while (aptMainLoop()) {
+        int inv[8], inv_sum = 0;
+        for (int i = 0; i < 8; i++) {
+            inv[i] = rd16(ctx, blk + g->p_invest_off + i * 2);
+            inv_sum += inv[i];
+        }
+        int freedom = rd16(ctx, blk + gp + 4);
+        int budget = freedom + inv_sum;
+
+        char title[48];
+        snprintf(title, 48, "%s  GP %d TP %d", pi->name, rd16(ctx, blk + gp), rd16(ctx, blk + gp + 2));
+
+        char rows[12][48];
+        snprintf(rows[0], 48, "Level      %-4d (adjusts GP/TP)", ctx->plain[blk + gp + 6]);
+        snprintf(rows[1], 48, "Freedom left    %d", freedom);
+        for (int i = 0; i < 8; i++)
+            snprintf(rows[2 + i], 48, "%-9s %3d %+4d = %d", STAT_NAMES[i], pi->st[i], inv[i], pi->st[i] + inv[i]);
+        snprintf(rows[10], 48, "[ God mode (free edit) ]");
+        snprintf(rows[11], 48, "[ Reset freedom & invested points ]");
+        const char *lines[12];
+        for (int i = 0; i < 12; i++) lines[i] = rows[i];
+
+        int pick = ui_list(title, lines, 12, cursor);
+        if (pick < 0) return;
+        cursor = pick;
+
+        int v;
+        if (pick == 0) {
+            if (ui_number("Level (1-99)", ctx->plain[blk + gp + 6], 1, 99, &v))
+                level_gp_tp(ctx, blk, pi, v);
+        } else if (pick == 1) {
+            ui_header();
+            char msg[96];
+            snprintf(msg, sizeof(msg), "Freedom left: %d (total budget %d).\nSpend it by raising stats.", freedom, budget);
+            ui_notice(msg, true);
+        } else if (pick >= 2 && pick < 10) {
+            int i = pick - 2;
+            int base = pi->st[i];
+            char hint[64];
+            snprintf(hint, sizeof(hint), "%s target (base %d)", STAT_NAMES[i], base);
+            int lo = base - 99; if (lo < 0) lo = 0;
+            if (!ui_number(hint, base + inv[i], lo, base + 199, &v)) continue;
+            int ninv = v - base;
+            int nsum = inv_sum - inv[i] + ninv;
+            if (nsum > budget) {
+                ui_header();
+                char msg[96];
+                snprintf(msg, sizeof(msg), "Not enough freedom points (left %d).\nLower another stat first.", freedom);
+                ui_notice(msg, false);
+                continue;
+            }
+            wr16(ctx, blk + g->p_invest_off + i * 2, (s16)ninv);
+            wr16(ctx, blk + gp + 4, (s16)(budget - nsum));
+        } else if (pick == 10) {
+            god_mode(ctx, blk, pi->name);
+        } else if (pick == 11) {
             char msg[96];
             snprintf(msg, sizeof(msg), "Reset freedom to %d and all\ninvested points to 0?", pi->freedom);
             if (ui_dialog("reset", msg, false)) {
@@ -261,10 +358,6 @@ static void edit_player(SaveCtx *ctx, u32 blk, const PlayerInfo *pi)
                 for (int i = 0; i < 8; i++)
                     wr16(ctx, blk + g->p_invest_off + i * 2, 0);
             }
-        } else {
-            int i = pick - 4;
-            if (ui_number(inv_names[i], rd16(ctx, blk + g->p_invest_off + i * 2), 0, 255, &v))
-                wr16(ctx, blk + g->p_invest_off + i * 2, (s16)v);
         }
     }
 }
@@ -280,8 +373,6 @@ void player_editor(SaveCtx *ctx)
         return;
     }
 
-    /* player count = non-zero entries in the index table (mirrors the C# code);
-     * blocks are contiguous from pdata_off for that count */
     int count = 0;
     for (int i = 0; i < g->pmax; i++)
         if (rd32(ctx, g->pindex_off + (u32)i * 4) != 0) count++;
@@ -326,9 +417,12 @@ void player_editor(SaveCtx *ctx)
         cursor = pick;
 
         if (pick == 0) {
-            if (ui_dialog("set all Lv 99", "Set every player to level 99?\n\n(GP/TP are left untouched.)", false))
-                for (int i = 1; i < n; i++)
-                    ctx->plain[blocks[i] + g->p_gp_off + 6] = 99;
+            if (ui_dialog("set all Lv 99", "Set every player to level 99?\n\nGP/TP are raised to each player's\nbase maximum.", false))
+                for (int i = 1; i < n; i++) {
+                    u32 id;
+                    memcpy(&id, ctx->plain + blocks[i] + g->p_id_off, 4);
+                    level_gp_tp(ctx, blocks[i], player_info(g, id), 99);
+                }
             continue;
         }
         u32 id;
@@ -500,6 +594,35 @@ static void inventory_batch(SaveCtx *ctx)
     }
 }
 
+static void inventory_subcats(SaveCtx *ctx, const char *gname, const u8 *gsubs, int gn, const int *counts)
+{
+    int cursor = 0;
+    while (aptMainLoop()) {
+        char rows[24][48];
+        int subs[24];
+        const char *lines[24];
+        int n = 0;
+        for (int k = 0; k < gn; k++) {
+            int s = gsubs[k];
+            if (!counts[s]) continue;
+            snprintf(rows[n], 48, "%-16s (%d)", SUBCAT_NAMES[s], counts[s]);
+            subs[n] = s;
+            lines[n] = rows[n];
+            n++;
+        }
+        if (!n) {
+            ui_header();
+            ui_notice("Nothing owned in this group.", false);
+            return;
+        }
+        if (n == 1) { inventory_items(ctx, subs[0]); return; }
+        int pick = ui_list(gname, lines, n, cursor);
+        if (pick < 0) return;
+        cursor = pick;
+        inventory_items(ctx, subs[pick]);
+    }
+}
+
 void inventory_editor(SaveCtx *ctx)
 {
     const GameDef *g = ctx->game;
@@ -517,9 +640,19 @@ void inventory_editor(SaveCtx *ctx)
     u8 *snap = malloc(snap_len);
     memcpy(snap, ctx->plain + snap_start, snap_len);
 
+    static const u8 grp_equip[] = { 1, 2, 3, 4 };
+    static const u8 grp_moves[] = { 7, 8, 9, 10, 11, 21, 22 };
+    static const u8 grp_items[] = { 5, 6, 12, 13, 14, 15, 23 };
+    static const u8 grp_team[]  = { 16, 17, 18, 19, 20 };
+    static const struct { const char *name; const u8 *subs; int n; } GROUPS[4] = {
+        { "Equipment",       grp_equip, 4 },
+        { "Moves & Spirits", grp_moves, 7 },
+        { "Items",           grp_items, 7 },
+        { "Team",            grp_team,  5 },
+    };
+
     int cursor = 0;
     while (aptMainLoop()) {
-        /* count owned+known items per subcategory */
         int counts[24] = {0};
         for (int grp = 0; grp < 3; grp++) {
             u32 base = (grp == 0) ? g->g1_off : (grp == 1) ? g->g2_off : g->g3_off;
@@ -533,22 +666,23 @@ void inventory_editor(SaveCtx *ctx)
                 if (ii) counts[(ii->sub < 24) ? ii->sub : 0]++;
             }
         }
-        char rows[25][48];
-        int subs[25];
-        const char *lines[25];
-        int n = 0;
-        snprintf(rows[n], 48, "[ Batch actions (x99, cleanup) ]");
-        subs[n] = -1;
-        lines[n] = rows[n];
-        n++;
-        for (int s = 0; s < 24; s++) {
-            if (!counts[s]) continue;
-            snprintf(rows[n], 48, "%-16s (%d)", SUBCAT_NAMES[s], counts[s]);
-            subs[n] = s;
+
+        char rows[5][48];
+        const char *lines[5];
+        snprintf(rows[0], 48, "[ Batch actions (x99, cleanup) ]");
+        lines[0] = rows[0];
+        int n = 1;
+        int gidx[5];
+        for (int k = 0; k < 4; k++) {
+            int c = 0;
+            for (int i = 0; i < GROUPS[k].n; i++) c += counts[GROUPS[k].subs[i]];
+            if (!c) continue;
+            snprintf(rows[n], 48, "%-16s (%d)", GROUPS[k].name, c);
+            gidx[n] = k;
             lines[n] = rows[n];
             n++;
         }
-        if (!n) {
+        if (n == 1) {
             ui_header();
             ui_notice("No known items in this save.", false);
             break;
@@ -557,8 +691,8 @@ void inventory_editor(SaveCtx *ctx)
         int pick = ui_list("Inventory (B: back)", lines, n, cursor);
         if (pick < 0) break;
         cursor = pick;
-        if (subs[pick] < 0) inventory_batch(ctx);
-        else inventory_items(ctx, subs[pick]);
+        if (pick == 0) inventory_batch(ctx);
+        else inventory_subcats(ctx, GROUPS[gidx[pick]].name, GROUPS[gidx[pick]].subs, GROUPS[gidx[pick]].n, counts);
     }
 
     if (memcmp(snap, ctx->plain + snap_start, snap_len) != 0) {
