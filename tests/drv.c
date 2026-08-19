@@ -6,6 +6,21 @@
 
 int main(int argc, char **argv)
 {
+    if (argc == 3 && !strcmp(argv[1], "--magic")) {
+        FILE *in = fopen(argv[2], "rb");
+        if (!in) return 2;
+        uint8_t head[6];
+        uint32_t seed;
+        fseek(in, 0, SEEK_END);
+        long sz = ftell(in);
+        fseek(in, 0, SEEK_SET);
+        if (fread(head, 1, 6, in) != 6) return 2;
+        fseek(in, sz - 4, SEEK_SET);
+        if (fread(&seed, 1, 4, in) != 4) return 2;
+        fclose(in);
+        printf("%04X\n", ie_magic(head, seed));
+        return 0;
+    }
     if (argc != 3) return 2;
     FILE *in = fopen(argv[1], "rb");
     if (!in) return 2;

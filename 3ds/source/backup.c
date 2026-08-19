@@ -29,15 +29,14 @@ void migrate_backups(void)
 bool backup_save(SaveCtx *ctx, const char *name)
 {
     char path[0x300];
-    if (name) {
+    time_t t = time(NULL);
+    struct tm *tm = localtime(&t);
+    if (name)
         snprintf(path, sizeof(path), BACKUP_DIR "/%s.bak", name);
-    } else {
-        time_t t = time(NULL);
-        struct tm *tm = localtime(&t);
-        snprintf(path, sizeof(path), BACKUP_DIR "/auto-%04d%02d%02d-%02d%02d%02d.bak",
-                 tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday,
+    else
+        snprintf(path, sizeof(path), BACKUP_DIR "/%s-auto-%04d-%02d-%02d-%02d%02d%02d.bak",
+                 ctx->game->shortname, tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday,
                  tm->tm_hour, tm->tm_min, tm->tm_sec);
-    }
     FILE *out = fopen(path, "wb");
     if (!out) return false;
     bool ok = fwrite(ctx->raw, 1, ctx->size, out) == ctx->size;
@@ -45,6 +44,21 @@ bool backup_save(SaveCtx *ctx, const char *name)
     if (ok) logline("backup: sd:%s", path);
     else remove(path);
     return ok;
+}
+
+/* the backup's magic must match the currently loaded game */
+static bool bak_matches_game(SaveCtx *ctx, const char *full, long size)
+{
+    if (size < 0x1000) return false;
+    FILE *in = fopen(full, "rb");
+    if (!in) return false;
+    u8 head[6];
+    u32 seed = 0;
+    bool ok = fread(head, 1, 6, in) == 6 &&
+              fseek(in, size - 4, SEEK_SET) == 0 &&
+              fread(&seed, 1, 4, in) == 4;
+    fclose(in);
+    return ok && ie_magic(head, seed) == ctx->game->magic;
 }
 
 static bool restore_file(SaveCtx *ctx, const char *bakname)
@@ -59,7 +73,7 @@ static bool restore_file(SaveCtx *ctx, const char *bakname)
     u8 *buf = malloc(size);
     bool rok = fread(buf, 1, size, in) == (size_t)size;
     fclose(in);
-    if (!rok || size < 0x100) { free(buf); return false; }
+    if (!rok || size < 0x1000) { free(buf); return false; }
 
     logline("restoring %s (%ld b) into %s", bakname, size, ctx->filepath);
     Handle f;
@@ -76,7 +90,6 @@ static bool restore_file(SaveCtx *ctx, const char *bakname)
                                                    NULL, 0, NULL, 0));
     }
     if (ok) {
-        /* refresh in-memory copies so the menu shows the restored state */
         free(ctx->raw);
         free(ctx->plain);
         ctx->size = (u32)size;
@@ -96,24 +109,25 @@ static int cmp_desc(const void *a, const void *b)
 }
 
 #define MAX_BAKS 100
+#define BAKNAME 56
 
 void backup_manager(SaveCtx *ctx)
 {
     int cursor = 0;
     while (aptMainLoop()) {
-        static char names[MAX_BAKS][48];
+        static char names[MAX_BAKS][BAKNAME];
         int n = 0;
         DIR *d = opendir(BACKUP_DIR);
         if (d) {
             struct dirent *e;
             while ((e = readdir(d)) && n < MAX_BAKS) {
                 size_t l = strlen(e->d_name);
-                if (l > 4 && l < 48 && !strcmp(e->d_name + l - 4, ".bak"))
-                    snprintf(names[n++], 48, "%s", e->d_name);
+                if (l > 4 && l < BAKNAME && !strcmp(e->d_name + l - 4, ".bak"))
+                    snprintf(names[n++], BAKNAME, "%s", e->d_name);
             }
             closedir(d);
         }
-        qsort(names, n, 48, cmp_desc);
+        qsort(names, n, BAKNAME, cmp_desc);
 
         const char *lines[MAX_BAKS + 1];
         static char newlabel[] = "[ New backup ]";
@@ -128,13 +142,12 @@ void backup_manager(SaveCtx *ctx)
             char name[40] = "";
             time_t t = time(NULL);
             struct tm *tm = localtime(&t);
-            char def[40];
-            snprintf(def, sizeof(def), "manual-%04d%02d%02d-%02d%02d",
+            char def[48];
+            snprintf(def, sizeof(def), "%s-%04d-%02d-%02d-%02d%02d", ctx->game->shortname,
                      tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday, tm->tm_hour, tm->tm_min);
             if (!ui_text("Backup name", def, name, 40)) continue;
             ui_header();
-            ui_notice(backup_save(ctx, name) ? "Backup written." : "Backup FAILED.",
-                      true);
+            ui_notice(backup_save(ctx, name) ? "Backup written." : "Backup FAILED.", true);
             continue;
         }
 
@@ -142,13 +155,20 @@ void backup_manager(SaveCtx *ctx)
         const char *actions[] = { "Restore over current save", "Rename", "Delete", "Back" };
         int act = ui_list(bak, actions, 4, 0);
         if (act == 0) {
+            char full[0x300];
+            struct stat st;
+            snprintf(full, sizeof(full), BACKUP_DIR "/%s", bak);
+            if (stat(full, &st) != 0 || !bak_matches_game(ctx, full, st.st_size)) {
+                ui_header();
+                ui_notice("Refused: backup is not a save of\nthis game.", false);
+                continue;
+            }
             char msg[128];
             snprintf(msg, sizeof(msg), "Restore %s\nover the current save?", bak);
             if (!ui_dialog("restore", msg, false)) continue;
             ui_header();
             ui_notice(restore_file(ctx, bak) ? "Restored and committed."
-                                             : "RESTORE FAILED, see log.",
-                      true);
+                                             : "RESTORE FAILED, see log.", true);
         } else if (act == 1) {
             char base[40];
             snprintf(base, sizeof(base), "%.*s", (int)(strlen(bak) - 4), bak);

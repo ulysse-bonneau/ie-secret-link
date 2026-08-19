@@ -1,0 +1,68 @@
+/* Per-game offsets, ported from the reference editor's helper classes
+ * (IEGOHelper / IEGOCSHelper / IEGOGalaxyHelper). See NOTES.md. */
+#include "app.h"
+
+const GameDef GAMES[] = {
+    {
+        .name = "GO Galaxy", .shortname = "galaxy", .magic = 0x40F1,
+        .time_off = 0x20, .name_off = 0x3C, .team_off = 0x5C,
+        .money_off = 0x268D0, .has_friendship = false, .coin_off = 0x26CC8,
+        .chapter_off = 0x9F1C,
+        .link_kind = LINK_LEVEL, .link_off = 0x90B4,
+        .pdata_off = 0xF83C, .pindex_off = 0x26E28, .pmax = 336, .pblock = 268,
+        .p_id_off = 8, .p_gp_off = 28, .p_invest_off = 52,
+        .db = GALAXY_DB, .db_count = GALAXY_DB_COUNT,
+        .unlock = UNLOCK_GALAXY, .unlock_n = UNLOCK_GALAXY_N, .unlock_end = UNLOCK_GALAXY_END,
+        .unlock_label = "Unlock data DL + QR + GO/CS link",
+    },
+    {
+        .name = "GO Chrono Stones (EU)", .shortname = "cs-eu", .magic = 0x4CF1,
+        .time_off = 0x20, .name_off = 0x3C, .team_off = 0x64,
+        .money_off = 0x1C0B0, .has_friendship = true, .coin_off = 0,
+        .chapter_off = 0x10FC,
+        .link_kind = LINK_LEVEL, .link_off = 0x3B4,
+        .pdata_off = 0x5B1C, .pindex_off = 0x1C4E0, .pmax = 336, .pblock = 260,
+        .p_id_off = 4, .p_gp_off = 12, .p_invest_off = 44,
+        .db = CS_DB, .db_count = CS_DB_COUNT,
+        .unlock = UNLOCK_CS_EU, .unlock_n = UNLOCK_CS_EU_N, .unlock_end = UNLOCK_CS_EU_END,
+        .unlock_label = "Unlock data DL + password + GO link",
+    },
+    {
+        .name = "GO Chrono Stones (JP)", .shortname = "cs-jp", .magic = 0xC4F1,
+        .time_off = 0x20, .name_off = 0x3C, .team_off = 0x5C,
+        .money_off = 0x1C060, .has_friendship = true, .coin_off = 0,
+        .chapter_off = 0x10AC,
+        .link_kind = LINK_LEVEL, .link_off = 0x364,
+        .pdata_off = 0x5ACC, .pindex_off = 0x1C438, .pmax = 336, .pblock = 260,
+        .p_id_off = 4, .p_gp_off = 12, .p_invest_off = 44,
+        .db = CS_DB, .db_count = CS_DB_COUNT,
+        .unlock = UNLOCK_CS_JP, .unlock_n = UNLOCK_CS_JP_N, .unlock_end = UNLOCK_CS_JP_END,
+        .unlock_label = "Unlock data DL + password + GO link",
+    },
+    {
+        .name = "GO (EU)", .shortname = "go-eu", .magic = 0x2CF1,
+        .time_off = 0x24, .name_off = 0x3C, .team_off = 0x64,
+        .money_off = 0x8DDC, .has_friendship = true, .coin_off = 0,
+        .chapter_off = 0,
+        .link_kind = LINK_GO_WORD, .link_off = 0x253,
+        .pdata_off = 0x3488, .pindex_off = 0x8EC8, .pmax = 112, .pblock = 204,
+        .p_id_off = 4, .p_gp_off = 12, .p_invest_off = 32,
+        .db = GO_DB, .db_count = GO_DB_COUNT,
+        .unlock = UNLOCK_GO_EU, .unlock_n = UNLOCK_GO_EU_N, .unlock_end = UNLOCK_GO_EU_END,
+        .unlock_label = "Unlock data download",
+    },
+    {
+        .name = "GO (JP)", .shortname = "go-jp", .magic = 0x6CF1,
+        .time_off = 0x24, .name_off = 0x3C, .team_off = 0x5C,
+        .money_off = 0x8D8C, .has_friendship = true, .coin_off = 0,
+        .chapter_off = 0,
+        .link_kind = LINK_GO_WORD, .link_off = 0x253,
+        .pdata_off = 0x3438, .pindex_off = 0x8E78, .pmax = 112, .pblock = 204,
+        .p_id_off = 4, .p_gp_off = 12, .p_invest_off = 32,
+        .db = GO_DB, .db_count = GO_DB_COUNT,
+        .unlock = UNLOCK_GO_JP, .unlock_n = UNLOCK_GO_JP_N, .unlock_end = UNLOCK_GO_JP_END,
+        .unlock_label = "Unlock data download",
+    },
+};
+
+const int GAMES_N = sizeof(GAMES) / sizeof(*GAMES);

@@ -22,4 +22,5 @@ EOF
 
 "$tmp/drv" "$tmp/plain" "$tmp/c.bin"
 cmp "$tmp/c.bin" "$tmp/py.bin"
+test "$("$tmp/drv" --magic "$tmp/c.bin")" = "40F1"
 echo "parity OK"

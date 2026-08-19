@@ -62,6 +62,16 @@ void ie_xor_body(uint8_t *buf, uint32_t len)
     }
 }
 
+uint16_t ie_magic(const uint8_t *head6, uint32_t seed)
+{
+    uint8_t table[256];
+    build_table(seed, table);
+    uint32_t ka = odd_primes[table[0]];
+    uint8_t b4 = head6[4] ^ table[(ka * 5) & 0xFF];
+    uint8_t b5 = head6[5] ^ table[(ka * 6) & 0xFF];
+    return (uint16_t)(b4 | (b5 << 8));
+}
+
 uint32_t ie_crc32(const uint8_t *buf, uint32_t len)
 {
     uint32_t c = 0xFFFFFFFF;

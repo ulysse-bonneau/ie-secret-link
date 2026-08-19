@@ -2,42 +2,60 @@
 #include <3ds.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include "unlock_data.h"
+#include "players_db.h"
 
-#define VERSION        "v0.4.0"
-#define GALAXY_MAGIC   0x40F1
-
-/* decrypted-save offsets (see NOTES.md) */
-#define TIME_OFFSET     0x20
-#define NAME_OFFSET     0x3C
-#define TEAMNAME_OFFSET 0x5C
-#define NAME_FIELD_LEN  0x20
-#define LINK_OFFSET     0x90B4
-#define CHAPTER_OFFSET  0x9F1C
-#define PLAYERS_OFFSET  0xF83C
-#define PLAYER_BLOCK    250
-#define MAX_PLAYERS     336
-#define MONEY_OFFSET    0x268D0
-#define COIN_OFFSET     0x26CC8
+#define VERSION "v0.5.0"
 
 #define BACKUP_DIR     "/IESM"
 #define OLD_BACKUP_DIR "/ie-secret-link"
+#define NAME_FIELD_LEN 0x20
+
+typedef enum { LINK_NONE, LINK_LEVEL, LINK_GO_WORD } LinkKind;
+
+typedef struct {
+    const char *name;      /* shown in the save picker */
+    const char *shortname; /* backup name prefix */
+    u16 magic;
+    /* save info */
+    u32 time_off, name_off, team_off;
+    u32 money_off;         /* prestige i32; +4 = friendship when has_friendship */
+    bool has_friendship;
+    u32 coin_off;          /* 5 x s16, Galaxy only (0 = none) */
+    u32 chapter_off;       /* 0 = not known for this game */
+    /* secret link */
+    LinkKind link_kind;
+    u32 link_off;
+    /* players */
+    u32 pdata_off, pindex_off;
+    int pmax, pblock;      /* block stride; 0 = players unsupported */
+    u32 p_id_off, p_gp_off, p_invest_off; /* TP = gp+2, Freedom = gp+4, Level = gp+6 */
+    const PlayerInfo *db;
+    int db_count;
+    /* unlock-all-data */
+    const UnlockRegion *unlock;
+    int unlock_n;
+    u32 unlock_end;        /* highest offset written, for a size guard */
+    const char *unlock_label;
+} GameDef;
+
+extern const GameDef GAMES[];
+extern const int GAMES_N;
 
 typedef struct {
     FS_Archive arch;
-    char filepath[0x220]; /* path inside the save archive, leading '/' */
-    u8 *raw;    /* encrypted, as on disk */
-    u8 *plain;  /* decrypted copy */
+    char filepath[0x220];
+    u8 *raw;
+    u8 *plain;
     u32 size;
     u64 tid;
     const char *media;
-    int matches;
+    const GameDef *game;
 } SaveCtx;
 
 /* main.c */
 extern FILE *logfp;
 void logline(const char *fmt, ...);
-const char *title_name(u64 tid);
-bool find_save(SaveCtx *ctx);
 bool commit_plain(SaveCtx *ctx);
 
 /* ui.c */
@@ -61,7 +79,7 @@ bool ui_number(const char *hint, int initial, int min, int max, int *out);
 
 /* backup.c */
 void migrate_backups(void);
-bool backup_save(SaveCtx *ctx, const char *name); /* NULL = timestamped auto name */
+bool backup_save(SaveCtx *ctx, const char *name); /* NULL = auto date name */
 void backup_manager(SaveCtx *ctx);
 
 /* editors.c */
@@ -69,6 +87,4 @@ void link_level_editor(SaveCtx *ctx);
 void sdlink_unlock(SaveCtx *ctx);
 void saveinfo_editor(SaveCtx *ctx);
 void player_editor(SaveCtx *ctx);
-
-/* guarded commit used by all editors: backup, write, report */
 bool apply_changes(SaveCtx *ctx);

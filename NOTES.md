@@ -96,3 +96,16 @@ entries) into `3ds/source/players_db.h` by `tools/gen_players.py`.
 
 Name @ 0x3C, team name @ 0x5C (32-byte fields, `00 88` terminated),
 play time i32 seconds @ 0x20, prestige i32 @ 0x268D0, coins s16[5] @ 0x26CC8.
+
+## Multi-game support (v0.5.0)
+
+Per-game offsets in `3ds/source/games.c`, from the C# helper classes.
+Magics: GO EU 0x2CF1 / GO JP 0x6CF1 / CS EU 0x4CF1 / CS JP 0xC4F1 / Galaxy 0x40F1.
+Player block strides (C# bool marshals as 4 bytes in MoveBlock, so 12 B/move):
+GO 204, CS 260, Galaxy 268. Player count = non-zero entries of the index table
+(pindex_off), blocks contiguous from pdata_off — NOT one block per slot.
+GP/TP/Freedom/Level are adjacent (s16,s16,s16,u8) in all three games.
+GO secret link: u16 0x01C0 + u16 0x0000 written at 0x253 (level-3 unlock, no levels).
+Unlock-all-data regions per game/region generated into unlock_data.h by
+tools/gen_unlock.py; player name DBs (GO 1001 / CS 1578 / Galaxy 2024) by
+tools/gen_players.py.
