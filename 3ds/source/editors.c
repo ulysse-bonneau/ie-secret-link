@@ -909,11 +909,9 @@ void player_editor(SaveCtx *ctx)
             }
             const PlayerInfo *np = player_db_picker(ctx, true);
             if (!np) continue;
-            int lvl = 1;
-            if (!ui_number("Recruit at level (1-99)", 1, 1, 99, &lvl)) continue;
             u32 blk = g->pdata_off + (u32)count * g->pblock;
             int idx = next_player_index(ctx, count);
-            write_player_block(ctx, blk, np, lvl, idx);
+            write_player_block(ctx, blk, np, 1, idx);
             /* roster order lives in the index table: append at the first free slot */
             for (int i = 0; i < g->pmax; i++)
                 if (rd32(ctx, g->pindex_off + (u32)i * 4) == 0) {
@@ -921,6 +919,10 @@ void player_editor(SaveCtx *ctx)
                     break;
                 }
             count++;
+            ui_header();
+            char rmsg[64];
+            snprintf(rmsg, sizeof(rmsg), "Recruited %.24s at Lv 1.", np->name);
+            ui_notice(rmsg, true);
             continue;
         }
         u32 id;
@@ -1341,6 +1343,222 @@ void inventory_editor(SaveCtx *ctx)
     free(snap);
 }
 
+
+/* ---- teams / tactics ---- */
+
+/* find the item whose inventory Index field equals `idx` */
+static const ItemInfo *item_by_index(SaveCtx *ctx, int idx)
+{
+    const GameDef *g = ctx->game;
+    if (!idx) return NULL;
+    for (int grp = 0; grp < 3; grp++) {
+        u32 base = (grp == 0) ? g->g1_off : (grp == 1) ? g->g2_off : g->g3_off;
+        u32 stride = (grp == 0) ? 12 : (grp == 1) ? 16 : 8;
+        int cnt = (grp == 0) ? g->g1_n : (grp == 1) ? g->g2_n : g->g3_n;
+        for (int i = 0; i < cnt; i++) {
+            u32 e = base + (u32)i * stride;
+            if (rd32(ctx, e) != idx) continue;
+            u32 id;
+            memcpy(&id, ctx->plain + e + 4, 4);
+            return id ? item_info(g, id) : NULL;
+        }
+    }
+    return NULL;
+}
+
+/* pick an owned item of a subcategory; returns its inventory Index (0 = keep) */
+static int owned_item_picker(SaveCtx *ctx, int sub, const char *title)
+{
+    const GameDef *g = ctx->game;
+    static int idxs[PICK_MAX];
+    int n = 0;
+    for (int grp = 0; grp < 3 && n < PICK_MAX; grp++) {
+        u32 base = (grp == 0) ? g->g1_off : (grp == 1) ? g->g2_off : g->g3_off;
+        u32 stride = (grp == 0) ? 12 : (grp == 1) ? 16 : 8;
+        int cnt = (grp == 0) ? g->g1_n : (grp == 1) ? g->g2_n : g->g3_n;
+        for (int i = 0; i < cnt && n < PICK_MAX; i++) {
+            u32 e = base + (u32)i * stride;
+            u32 id;
+            memcpy(&id, ctx->plain + e + 4, 4);
+            if (!id) continue;
+            const ItemInfo *ii = item_info(g, id);
+            if (!ii || ii->sub != sub) continue;
+            idxs[n] = rd32(ctx, e);
+            snprintf(pick_lab[n], 40, "%s", ii->name);
+            pick_lines[n] = pick_lab[n];
+            n++;
+        }
+    }
+    if (!n) {
+        ui_header();
+        ui_notice("You own nothing of that type.", false);
+        return 0;
+    }
+    int pick = ui_list(title, pick_lines, n, 0);
+    return (pick < 0) ? 0 : idxs[pick];
+}
+
+/* pick a player from the reserve; returns roster index (0 = cancel) */
+static int reserve_picker(SaveCtx *ctx)
+{
+    const GameDef *g = ctx->game;
+    static int idxs[PICK_MAX];
+    int n = 0;
+    for (int i = 0; i < g->pmax && n < PICK_MAX; i++) {
+        u32 blk = g->pdata_off + (u32)i * g->pblock;
+        u32 id;
+        memcpy(&id, ctx->plain + blk + g->p_id_off, 4);
+        if (!id) continue;
+        int ridx = rd32(ctx, blk + g->p_id_off - 4);
+        if (!ridx) continue;
+        const PlayerInfo *pi = player_info(g, id);
+        idxs[n] = ridx;
+        if (pi)
+            snprintf(pick_lab[n], 40, "L%-3d %-2s %s", ctx->plain[blk + g->p_gp_off + 6], pi->pos, pi->name);
+        else
+            snprintf(pick_lab[n], 40, "L%-3d ?? %08lX", ctx->plain[blk + g->p_gp_off + 6], (unsigned long)id);
+        pick_lines[n] = pick_lab[n];
+        n++;
+    }
+    if (!n) return 0;
+    int pick = ui_list("Pick a player", pick_lines, n, 0);
+    return (pick < 0) ? 0 : idxs[pick];
+}
+
+static const char *roster_name(SaveCtx *ctx, int ridx, char *buf, size_t bufsz)
+{
+    const GameDef *g = ctx->game;
+    if (!ridx) return "(empty)";
+    for (int i = 0; i < g->pmax; i++) {
+        u32 blk = g->pdata_off + (u32)i * g->pblock;
+        if (rd32(ctx, blk + g->p_id_off - 4) != ridx) continue;
+        u32 id;
+        memcpy(&id, ctx->plain + blk + g->p_id_off, 4);
+        const PlayerInfo *pi = id ? player_info(g, id) : NULL;
+        if (pi) return pi->name;
+        snprintf(buf, bufsz, "%08lX", (unsigned long)id);
+        return buf;
+    }
+    snprintf(buf, bufsz, "idx %d ?", ridx);
+    return buf;
+}
+
+static void team_edit(SaveCtx *ctx, int t)
+{
+    const GameDef *g = ctx->game;
+    u32 info = g->t_info + (u32)t * g->t_info_str;
+    u32 players = g->t_players + (u32)t * 0x40;
+    u32 nameoff = g->t_name ? g->t_name + (u32)t * g->t_name_str : 0;
+    static const char *slot_names[4] = { "Coach", "Formation", "Kit", "Emblem" };
+    static const int slot_subs[4] = { 17, 16, 19, 20 };
+    int cursor = 0;
+
+    while (aptMainLoop()) {
+        char rows[21][48];
+        const char *lines[21];
+        int n = 0;
+        char tname[32] = "";
+        if (nameoff) {
+            read_name_buf(ctx->plain, nameoff, tname, sizeof(tname));
+            snprintf(rows[n], 48, "Name       %s", tname);
+            lines[n] = rows[n];
+            n++;
+        }
+        for (int s = 0; s < 4; s++) {
+            const ItemInfo *ii = item_by_index(ctx, rd32(ctx, info + (u32)s * 4));
+            snprintf(rows[n], 48, "%-9s  %s", slot_names[s], ii ? ii->name : "(none)");
+            lines[n] = rows[n];
+            n++;
+        }
+        for (int s = 0; s < 16; s++) {
+            char nb[16];
+            snprintf(rows[n], 48, "%2d  %s", s + 1,
+                     roster_name(ctx, rd32(ctx, players + (u32)s * 4), nb, sizeof(nb)));
+            lines[n] = rows[n];
+            n++;
+        }
+
+        int delta = 0;
+        int pick = ui_list_adj(tname[0] ? tname : "Custom team", lines, n, cursor, &delta);
+        if (pick < 0) return;
+        cursor = pick;
+        int base = nameoff ? 1 : 0;
+
+        if (nameoff && pick == 0) {
+            if (delta) continue;
+            char text[24];
+            if (ui_text("Team name", tname, text, 22)) {
+                memset(ctx->plain + nameoff, 0, g->t_name_str);
+                size_t l = strlen(text);
+                if (l > g->t_name_str - 2) l = g->t_name_str - 2;
+                memcpy(ctx->plain + nameoff, text, l);
+                ctx->plain[nameoff + l + 1] = 0x88;
+            }
+        } else if (pick < base + 4) {
+            int s = pick - base;
+            if (delta == 2) { wr32(ctx, info + (u32)s * 4, 0); continue; }
+            if (delta) continue;
+            int idx = owned_item_picker(ctx, slot_subs[s], slot_names[s]);
+            if (idx) wr32(ctx, info + (u32)s * 4, idx);
+        } else {
+            int s = pick - base - 4;
+            if (delta == 2) { wr32(ctx, players + (u32)s * 4, 0); continue; }
+            if (delta) continue;
+            int ridx = reserve_picker(ctx);
+            if (!ridx) continue;
+            bool dup = false;
+            for (int k = 0; k < 16; k++)
+                if (rd32(ctx, players + (u32)k * 4) == ridx) dup = true;
+            if (dup) {
+                ui_header();
+                ui_notice("Already in this team.", false);
+                continue;
+            }
+            wr32(ctx, players + (u32)s * 4, ridx);
+        }
+    }
+}
+
+void teams_editor(SaveCtx *ctx)
+{
+    const GameDef *g = ctx->game;
+    u32 span_end = g->t_players + (u32)g->t_count * 0x40;
+    if (!g->t_count || ctx->size < span_end) {
+        ui_header();
+        ui_notice("Teams not supported for this save.", false);
+        return;
+    }
+
+    u8 *snap = malloc(ctx->size);
+    memcpy(snap, ctx->plain, ctx->size);
+
+    int cursor = 0;
+    while (aptMainLoop()) {
+        char rows[10][48];
+        const char *lines[10];
+        for (int t = 0; t < g->t_count; t++) {
+            char tname[32] = "";
+            if (g->t_name)
+                read_name_buf(ctx->plain, g->t_name + (u32)t * g->t_name_str, tname, sizeof(tname));
+            if (tname[0])
+                snprintf(rows[t], 48, "%d  %s", t + 1, tname);
+            else
+                snprintf(rows[t], 48, "%d  Team %c", t + 1, 'A' + t);
+            lines[t] = rows[t];
+        }
+        int pick = ui_list("Custom teams (B: back)", lines, g->t_count, cursor);
+        if (pick < 0) break;
+        cursor = pick;
+        team_edit(ctx, pick);
+    }
+
+    if (memcmp(snap, ctx->plain, ctx->size) != 0) {
+        if (!apply_changes(ctx))
+            memcpy(ctx->plain, snap, ctx->size);
+    }
+    free(snap);
+}
+
 /* ---- commit recap ---- */
 
 static int rl_n, rl_over;
@@ -1486,6 +1704,18 @@ bool apply_changes(SaveCtx *ctx)
         remit("Play records unlocked");
 
     recap_players(ctx, old);
+    if (g->t_count) {
+        for (int t = 0; t < g->t_count; t++) {
+            bool ch = memcmp(old + g->t_info + (u32)t * g->t_info_str,
+                             ctx->plain + g->t_info + (u32)t * g->t_info_str, 48) ||
+                      memcmp(old + g->t_players + (u32)t * 0x40,
+                             ctx->plain + g->t_players + (u32)t * 0x40, 0x40) ||
+                      (g->t_name && memcmp(old + g->t_name + (u32)t * g->t_name_str,
+                                           ctx->plain + g->t_name + (u32)t * g->t_name_str,
+                                           g->t_name_str));
+            if (ch) remit("Custom team %d changed", t + 1);
+        }
+    }
     recap_items_side(ctx, ctx->plain, old, false); /* added + qty changes */
     recap_items_side(ctx, old, ctx->plain, true);  /* removed */
 
@@ -1503,6 +1733,11 @@ bool apply_changes(SaveCtx *ctx)
         if (i >= g->g1_off && i < g->g1_off + (u32)g->g1_n * 12) continue;
         if (i >= g->g2_off && i < g->g2_off + (u32)g->g2_n * 16) continue;
         if (i >= g->g3_off && i < g->g3_off + (u32)g->g3_n * 8) continue;
+        if (g->t_count) {
+            if (i >= g->t_info && i < g->t_info + (u32)g->t_count * g->t_info_str) continue;
+            if (i >= g->t_players && i < g->t_players + (u32)g->t_count * 0x40) continue;
+            if (g->t_name && i >= g->t_name && i < g->t_name + (u32)g->t_count * g->t_name_str) continue;
+        }
         other++;
     }
     bool players_touched = memcmp(old + g->pdata_off, ctx->plain + g->pdata_off,

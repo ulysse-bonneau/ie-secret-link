@@ -8,7 +8,7 @@
 #include "moves_db.h"
 #include "avatars_db.h"
 
-#define VERSION "v0.10.3"
+#define VERSION "v0.11.0"
 
 #define BACKUP_DIR     "/IESM"
 #define OLD_BACKUP_DIR "/ie-secret-link"
@@ -47,6 +47,11 @@ typedef struct {
     u32 g3_off; int g3_n;  /* ownership-only entries (idx,id = 8 B), no quantity */
     const ItemInfo *idb;
     int idb_count;
+    /* custom teams (tactics) */
+    u32 t_info, t_info_str;    /* coach/formation/kit/emblem i32 + 16+16 bytes */
+    u32 t_name, t_name_str;    /* 0 = teams are unnamed (GO) */
+    u32 t_players;             /* 16 x i32 roster indexes, stride 0x40 */
+    int t_count;
     /* unlock-all-data */
     const UnlockRegion *unlock;
     int unlock_n;
@@ -109,4 +114,5 @@ void saveinfo_editor(SaveCtx *ctx);
 void player_editor(SaveCtx *ctx);
 void inventory_editor(SaveCtx *ctx);
 void records_unlock(SaveCtx *ctx);
+void teams_editor(SaveCtx *ctx);
 bool apply_changes(SaveCtx *ctx);
