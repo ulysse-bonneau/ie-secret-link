@@ -5,12 +5,6 @@
 
 typedef struct { uint32_t offset; uint32_t len; const uint8_t *data; } UnlockRegion;
 
-static const uint8_t ul_galaxy_08F62[2] = {
-    0xB9, 0x08,
-};
-static const uint8_t ul_galaxy_08F6A[2] = {
-    0x46, 0xC9,
-};
 static const uint8_t ul_galaxy_08FFD[3] = {
     0x1C, 0x0E, 0xFE,
 };
@@ -102,14 +96,12 @@ static const uint8_t ul_galaxy_2ECB0[948] = {
     0x34, 0xD8, 0x5E, 0xE6, 0x00, 0xBC, 0x0E, 0x03, 0x0B, 0xC6, 0xD9, 0xAA,
 };
 static const UnlockRegion UNLOCK_GALAXY[] = {
-    { 0x08F62, 2, ul_galaxy_08F62 },
-    { 0x08F6A, 2, ul_galaxy_08F6A },
     { 0x08FFD, 3, ul_galaxy_08FFD },
     { 0x09000, 11, ul_galaxy_09000 },
     { 0x0902F, 9, ul_galaxy_0902F },
     { 0x2ECB0, 948, ul_galaxy_2ECB0 },
 };
-#define UNLOCK_GALAXY_N 6
+#define UNLOCK_GALAXY_N 4
 #define UNLOCK_GALAXY_END 0x2F064
 
 static const uint8_t ul_cs_jp_002AB[6] = {

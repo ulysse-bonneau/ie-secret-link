@@ -48,6 +48,10 @@ def split_jp_eu(block):
 
 sets = {}
 sets["galaxy"] = parse_regions(unlock_block(f"{BASE}/IEGOGalaxy/IEGOGalaxy.cs"))
+# 0x8F62/0x8F6A hold FE FF-tagged checksum fields; the reference editor's
+# unlock data accidentally captured a donor save's checksum values there.
+# Writing them arms the game's inventory checksum -> corruption trap.
+sets["galaxy"] = [(o, d) for o, d in sets["galaxy"] if o not in (0x8F62, 0x8F6A)]
 cs = unlock_block(f"{BASE}/IEGOCS/IEGOCS.cs")
 sets["cs_jp"], sets["cs_eu"] = map(parse_regions, split_jp_eu(cs))
 go = unlock_block(f"{BASE}/IEGO/IEGO.cs")

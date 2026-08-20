@@ -34,22 +34,24 @@ A `.3dsx` for Homebrew Launcher is on the release page too. Once installed, use
   sorted per game under `sd:/IESM/<game>/`. Advanced submenu has debug diff/checksum tools.
 - Two-screen UI; a running log on the bottom screen and in `sd:/IESM/log.txt`.
 
-## Inventory: use Checkpoint cheats, not IESM, to duplicate items
+## The Galaxy inventory checksum (solved)
 
-The game protects the inventory region with an undocumented checksum that IESM can't yet
-reproduce, so **committing inventory quantity edits corrupts Galaxy saves** (the reference
-editor has the same limitation). IESM keeps inventory editing available behind a warning,
-but for item duplication the reliable route is **AR cheat codes via Checkpoint / Luma's
-Rosalina cheat menu**: cheats patch live RAM and the *game* writes the save (with a valid
-checksum), so they never corrupt.
+Galaxy guards its counters + inventory region with a `FE FF`-tagged u16 checksum stored
+at `0x8F6A` and `0x9F16`. On fresh saves the pair is **zero and the game skips
+validation**. The reference editor's "unlock all data" byte-set accidentally contains a
+donor save's checksum value at `0x8F6A` — writing it **arms** the game's validation, and
+from then on any external inventory edit reads as "corrupted" (that's the desktop
+editor's issue #14, and it bit this project too).
 
-The "item ×99" style cheats also duplicate your **PalPack cards to ×99**, which clutters
-the card list. IESM's **Inventory → Batch actions → PalPack cards → x1** trims them back
-to one each — that in-place quantity-lowering is safe to commit.
+IESM handles it both ways: the unlock no longer writes those two bytes, and every Galaxy
+commit **zeros the checksum pair**, returning the save to the dormant no-checksum state
+the game itself uses. Inventory editing is therefore safe again.
 
-Recovery note: if a save ever shows "corrupted" (e.g. after cheat use), restore the
-**newest** backup — the save carries an anti-rollback counter, so older backups can be
-rejected as rollbacks.
+If a "×99 items" cheat leaves your **PalPack cards at ×99**, Inventory → Batch actions →
+**PalPack cards → x1** trims them back.
+
+Recovery note: if a save ever shows "corrupted", restore the **newest** backup first —
+the save carries an anti-rollback counter, so older backups can be rejected as rollbacks.
 
 ## Repo layout
 
