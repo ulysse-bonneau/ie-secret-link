@@ -1593,8 +1593,11 @@ static void inventory_batch(SaveCtx *ctx)
         int pick = ui_list("Batch actions", lines, 6, cursor);
         if (pick < 0) return;
         cursor = pick;
-        char msg[96];
-        snprintf(msg, sizeof(msg), "%s\n\nApply to all owned items?", ACTIONS[pick].label);
+        char msg[160];
+        if (ACTIONS[pick].qty == 1)
+            snprintf(msg, sizeof(msg), "PalPack cards -> x1.\n\nCheckpoint item-dup cheats duplicate\ncards to x99; this trims each to 1\nso they stop clogging the list.\n\nApply?");
+        else
+            snprintf(msg, sizeof(msg), "%s\n\nApply to all owned items?", ACTIONS[pick].label);
         if (!ui_dialog("apply", msg, false)) continue;
         int c = batch_qty(ctx, ACTIONS[pick].subs, ACTIONS[pick].n, ACTIONS[pick].qty);
         ui_header();
@@ -1646,7 +1649,7 @@ void inventory_editor(SaveCtx *ctx)
     }
 
     ui_header();
-    if (!ui_dialog("I understand", "KNOWN ISSUE: committing inventory\nchanges corrupts Galaxy saves\n(under investigation, see README).\n\nBrowsing is safe; auto-backups\nprotect every commit.", true))
+    if (!ui_dialog("I understand", "KNOWN ISSUE: committing inventory edits\ncorrupts Galaxy saves (checksum).\n\nTo duplicate items, prefer Checkpoint\ncheats (item x99) - they save via the\ngame and stay valid.\n\nBrowsing is safe; auto-backups protect\nevery commit.", true))
         return;
 
     u32 snap_start = g->g1_off;

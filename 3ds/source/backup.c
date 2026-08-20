@@ -433,30 +433,25 @@ void backup_manager(SaveCtx *ctx)
 
         char *bak = names[pick - 1];
         const char *actions[] = { "Restore over current save", "Rename", "Delete",
-                                  "Diff against another backup", "Hunt checksum @0x28",
-                                  "Hunt u16 checksum @0x9F16", "Send to PC (Wi-Fi)",
-                                  "Upload to internet (bashupload)", "Back" };
-        int act = ui_list(bak, actions, 9, 0);
-        if (act == 4) { hunt_checksum(ctx, dir, bak); continue; }
-        if (act == 5) { hunt_checksum16(ctx, dir, bak); continue; }
-        if (act == 6 || act == 7) {
-            char full2[0x300];
-            snprintf(full2, sizeof(full2), "%s/%s", dir, bak);
-            if (act == 6) send_file_to_pc(full2, bak);
-            else send_file_to_internet(full2, bak);
-            continue;
-        }
+                                  "Advanced (debug tools)", "Back" };
+        int act = ui_list(bak, actions, 5, 0);
         if (act == 3) {
-            const char *lines2[MAX_BAKS];
-            int m = 0;
-            for (int i = 0; i < n; i++)
-                if (i != pick - 1) lines2[m++] = names[i];
-            if (!m) continue;
-            int other = ui_list("Diff against...", lines2, m, 0);
-            if (other < 0) continue;
-            /* map back to names[] skipping the selected one */
-            int oi = (other >= pick - 1) ? other + 1 : other;
-            diff_backups(ctx, dir, bak, names[oi]);
+            const char *dbg[] = { "Diff against another backup",
+                                  "Hunt checksum @0x28", "Hunt u16 checksum @0x9F16", "Back" };
+            int d = ui_list(bak, dbg, 4, 0);
+            if (d == 1) { hunt_checksum(ctx, dir, bak); continue; }
+            if (d == 2) { hunt_checksum16(ctx, dir, bak); continue; }
+            if (d == 0) {
+                const char *lines2[MAX_BAKS];
+                int m = 0;
+                for (int i = 0; i < n; i++)
+                    if (i != pick - 1) lines2[m++] = names[i];
+                if (!m) continue;
+                int other = ui_list("Diff against...", lines2, m, 0);
+                if (other < 0) continue;
+                int oi = (other >= pick - 1) ? other + 1 : other;
+                diff_backups(ctx, dir, bak, names[oi]);
+            }
             continue;
         }
         if (act == 0) {

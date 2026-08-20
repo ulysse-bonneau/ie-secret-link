@@ -73,49 +73,55 @@ static bool fetch_latest_tag(char *out, size_t outsz)
 static bool install_cia(void)
 {
     httpcContext ctx;
-    if (R_FAILED(http_open(&ctx, CIA_URL))) return false;
+    Result rc = http_open(&ctx, CIA_URL);
+    logline("update: open %08lX", (unsigned long)rc);
+    if (R_FAILED(rc)) { printf(" download connect failed (see log)\n"); return false; }
     u32 total = 0;
     httpcGetDownloadSizeState(&ctx, NULL, &total);
+    logline("update: size %lu", (unsigned long)total);
 
-    if (R_FAILED(amInit())) {
-        httpcCloseContext(&ctx);
-        return false;
-    }
+    rc = amInit();
+    if (R_FAILED(rc)) { logline("update: amInit %08lX", (unsigned long)rc); httpcCloseContext(&ctx); return false; }
     Handle cia;
-    if (R_FAILED(AM_StartCiaInstall(MEDIATYPE_SD, &cia))) {
-        amExit();
-        httpcCloseContext(&ctx);
-        return false;
-    }
+    rc = AM_StartCiaInstall(MEDIATYPE_SD, &cia);
+    logline("update: StartCiaInstall %08lX", (unsigned long)rc);
+    if (R_FAILED(rc)) { amExit(); httpcCloseContext(&ctx); return false; }
 
     static u8 buf[0x20000];
     u64 off = 0;
     bool ok = true;
     while (ok) {
         u32 got = 0;
-        Result rc = httpcDownloadData(&ctx, buf, sizeof(buf), &got);
+        rc = httpcDownloadData(&ctx, buf, sizeof(buf), &got);
         if (got) {
             u32 written = 0;
-            if (R_FAILED(FSFILE_Write(cia, &written, off, buf, got, 0)) || written != got) {
+            Result wr = FSFILE_Write(cia, &written, off, buf, got, 0);
+            if (R_FAILED(wr) || written != got) {
+                logline("update: write %08lX", (unsigned long)wr);
                 ok = false;
                 break;
             }
             off += got;
-            printf("\r %lu / %lu KB", (unsigned long)(off / 1024), (unsigned long)(total / 1024));
+            printf("\r %lu / %lu KB   ", (unsigned long)(off / 1024), (unsigned long)(total / 1024));
         }
         if (rc == 0) break;
         if (rc != (Result)HTTPC_RESULTCODE_DOWNLOADPENDING) {
+            logline("update: download %08lX", (unsigned long)rc);
             ok = false;
             break;
         }
     }
     printf("\n");
     httpcCloseContext(&ctx);
+    logline("update: got %lu / %lu bytes", (unsigned long)off, (unsigned long)total);
     if (ok && total && off != total) ok = false;
-    if (ok)
-        ok = R_SUCCEEDED(AM_FinishCiaInstall(cia));
-    else
+    if (ok) {
+        rc = AM_FinishCiaInstall(cia);
+        logline("update: FinishCiaInstall %08lX", (unsigned long)rc);
+        ok = R_SUCCEEDED(rc);
+    } else {
         AM_CancelCIAInstall(cia);
+    }
     amExit();
     return ok;
 }
@@ -160,145 +166,6 @@ void self_update(void)
         logline("self-updated to %s", tag);
         ui_notice("Installed. Close IESM and relaunch\nto use the new version.", true);
     } else {
-        ui_notice("Update FAILED. Install manually\nvia FBI if this persists.", false);
-    }
-}
-
-/* ---- send a backup to a PC over the local network ---- */
-
-#define IP_FILE BACKUP_DIR "/pc_ip.txt"
-
-void send_file_to_pc(const char *path, const char *name)
-{
-    FILE *in = fopen(path, "rb");
-    if (!in) {
-        ui_header();
-        ui_notice("Could not read the file.", false);
-        return;
-    }
-    fseek(in, 0, SEEK_END);
-    long size = ftell(in);
-    fseek(in, 0, SEEK_SET);
-    u8 *buf = malloc(size);
-    bool rok = fread(buf, 1, size, in) == (size_t)size;
-    fclose(in);
-    if (!rok) {
-        free(buf);
-        return;
-    }
-
-    char ip[40] = "";
-    FILE *f = fopen(IP_FILE, "r");
-    if (f) {
-        if (!fgets(ip, sizeof(ip), f)) ip[0] = 0;
-        fclose(f);
-        for (char *p = ip; *p; p++)
-            if (*p == '\n' || *p == '\r') *p = 0;
-    }
-    char entered[40];
-    if (!ui_text("PC IP (run tools/receive_saves.py)", ip[0] ? ip : "192.168.1.", entered, sizeof(entered))) {
-        free(buf);
-        return;
-    }
-    f = fopen(IP_FILE, "w");
-    if (f) {
-        fputs(entered, f);
-        fclose(f);
-    }
-
-    ui_header();
-    printf(" Sending %s (%ld b) to %s...\n", name, size, entered);
-    bool ok = false;
-    Result step = httpcInit(0);
-    logline("send: httpcInit %08lX", (unsigned long)step);
-    if (R_SUCCEEDED(step)) {
-        char url[0x100];
-        snprintf(url, sizeof(url), "http://%s:8123/%s", entered, name);
-        httpcContext ctx;
-        step = httpcOpenContext(&ctx, HTTPC_METHOD_POST, url, 1);
-        logline("send: open %08lX", (unsigned long)step);
-        if (R_SUCCEEDED(step)) {
-            httpcAddRequestHeaderField(&ctx, "User-Agent", "IESM");
-            step = httpcAddPostDataRaw(&ctx, (const u32 *)buf, (u32)size);
-            logline("send: postdata %08lX", (unsigned long)step);
-            step = httpcBeginRequest(&ctx);
-            logline("send: begin %08lX", (unsigned long)step);
-            if (R_SUCCEEDED(step)) {
-                u32 status = 0;
-                step = httpcGetResponseStatusCode(&ctx, &status);
-                logline("send: status rc=%08lX http=%lu", (unsigned long)step, (unsigned long)status);
-                ok = (status == 200);
-            }
-            httpcCloseContext(&ctx);
-        }
-        httpcExit();
-    }
-    free(buf);
-    ui_notice(ok ? "Sent." : "Send FAILED - error codes are on\nthe bottom screen and in log.txt.", ok);
-}
-
-/* upload a file to bashupload.com; shows the one-time download URL */
-void send_file_to_internet(const char *path, const char *name)
-{
-    FILE *in = fopen(path, "rb");
-    if (!in) {
-        ui_header();
-        ui_notice("Could not read the file.", false);
-        return;
-    }
-    fseek(in, 0, SEEK_END);
-    long size = ftell(in);
-    fseek(in, 0, SEEK_SET);
-    u8 *buf = malloc(size);
-    bool rok = fread(buf, 1, size, in) == (size_t)size;
-    fclose(in);
-    if (!rok) {
-        free(buf);
-        return;
-    }
-
-    ui_header();
-    printf(" Uploading %s (%ld b)...\n", name, size);
-    static char body[0x800];
-    u32 total = 0;
-    bool ok = false;
-    if (R_SUCCEEDED(httpcInit(0))) {
-        char url[0x120];
-        snprintf(url, sizeof(url), "https://bashupload.com/%s", name);
-        httpcContext ctx;
-        if (R_SUCCEEDED(httpcOpenContext(&ctx, HTTPC_METHOD_PUT, url, 1))) {
-            httpcSetSSLOpt(&ctx, SSLCOPT_DisableVerify);
-            httpcAddRequestHeaderField(&ctx, "User-Agent", "IESM");
-            httpcAddPostDataRaw(&ctx, (const u32 *)buf, (u32)size);
-            if (R_SUCCEEDED(httpcBeginRequest(&ctx))) {
-                u32 status = 0;
-                httpcGetResponseStatusCode(&ctx, &status);
-                if (status == 200) {
-                    u32 got = 0;
-                    while (total < sizeof(body) - 1) {
-                        Result rc = httpcDownloadData(&ctx, (u8 *)body + total,
-                                                      sizeof(body) - 1 - total, &got);
-                        if (got) total += got;
-                        if (rc == 0) break;
-                        if (rc != (Result)HTTPC_RESULTCODE_DOWNLOADPENDING) break;
-                    }
-                    body[total] = 0;
-                    ok = true;
-                }
-            }
-            httpcCloseContext(&ctx);
-        }
-        httpcExit();
-    }
-    free(buf);
-    ui_header();
-    if (ok) {
-        printf(C_OK " Uploaded. Download URL (one use):" C_RESET "\n\n%s\n", body);
-        logline("uploaded %s:", name);
-        logline("%s", body);
-        printf("\n" C_DIM " (also written to log.txt)\n Press any key." C_RESET "\n");
-        wait_key();
-    } else {
-        ui_notice("Upload FAILED.", false);
+        ui_notice("Update FAILED - step codes are in\nsd:/IESM/log.txt. Install via FBI\nif this persists.", false);
     }
 }

@@ -9,7 +9,7 @@
 #include "avatars_db.h"
 #include "records_db.h"
 
-#define VERSION "v0.15.3"
+#define VERSION "v0.15.4"
 
 #define BACKUP_DIR     "/IESM"
 #define OLD_BACKUP_DIR "/ie-secret-link"
@@ -116,8 +116,6 @@ void export_import(SaveCtx *ctx);
 
 /* update.c */
 void self_update(void);
-void send_file_to_pc(const char *path, const char *name);
-void send_file_to_internet(const char *path, const char *name);
 
 /* editors.c */
 void link_level_editor(SaveCtx *ctx);
