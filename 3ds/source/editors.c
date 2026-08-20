@@ -1546,6 +1546,11 @@ static int batch_qty(SaveCtx *ctx, const u8 *subs, int nsubs, int qty)
             for (int s = 0; s < nsubs; s++)
                 if (ii->sub == subs[s]) { hit = true; break; }
             if (!hit) continue;
+            s32 cur;
+            memcpy(&cur, ctx->plain + e + 8, 4);
+            /* qty 0 with a live slot = consumed/not-owned: resurrecting these
+             * corrupted a real save, so batches leave them alone */
+            if (cur <= 0) continue;
             s32 v = qty;
             if (grp) {
                 s32 eq;

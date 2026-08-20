@@ -9,7 +9,7 @@
 #include "avatars_db.h"
 #include "records_db.h"
 
-#define VERSION "v0.13.0"
+#define VERSION "v0.13.1"
 
 #define BACKUP_DIR     "/IESM"
 #define OLD_BACKUP_DIR "/ie-secret-link"
