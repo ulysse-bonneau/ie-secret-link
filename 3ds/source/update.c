@@ -209,16 +209,24 @@ void send_file_to_pc(const char *path, const char *name)
     ui_header();
     printf(" Sending %s (%ld b) to %s...\n", name, size, entered);
     bool ok = false;
-    if (R_SUCCEEDED(httpcInit(0))) {
+    Result step = httpcInit(0);
+    logline("send: httpcInit %08lX", (unsigned long)step);
+    if (R_SUCCEEDED(step)) {
         char url[0x100];
         snprintf(url, sizeof(url), "http://%s:8123/%s", entered, name);
         httpcContext ctx;
-        if (R_SUCCEEDED(httpcOpenContext(&ctx, HTTPC_METHOD_POST, url, 1))) {
+        step = httpcOpenContext(&ctx, HTTPC_METHOD_POST, url, 1);
+        logline("send: open %08lX", (unsigned long)step);
+        if (R_SUCCEEDED(step)) {
             httpcAddRequestHeaderField(&ctx, "User-Agent", "IESM");
-            httpcAddPostDataRaw(&ctx, (const u32 *)buf, (u32)size);
-            if (R_SUCCEEDED(httpcBeginRequest(&ctx))) {
+            step = httpcAddPostDataRaw(&ctx, (const u32 *)buf, (u32)size);
+            logline("send: postdata %08lX", (unsigned long)step);
+            step = httpcBeginRequest(&ctx);
+            logline("send: begin %08lX", (unsigned long)step);
+            if (R_SUCCEEDED(step)) {
                 u32 status = 0;
-                httpcGetResponseStatusCode(&ctx, &status);
+                step = httpcGetResponseStatusCode(&ctx, &status);
+                logline("send: status rc=%08lX http=%lu", (unsigned long)step, (unsigned long)status);
                 ok = (status == 200);
             }
             httpcCloseContext(&ctx);
@@ -226,7 +234,7 @@ void send_file_to_pc(const char *path, const char *name)
         httpcExit();
     }
     free(buf);
-    ui_notice(ok ? "Sent." : "Send FAILED (server running? same\nWi-Fi? IP correct?).", ok);
+    ui_notice(ok ? "Sent." : "Send FAILED - error codes are on\nthe bottom screen and in log.txt.", ok);
 }
 
 /* upload a file to bashupload.com; shows the one-time download URL */
