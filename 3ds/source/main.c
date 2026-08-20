@@ -293,9 +293,9 @@ int main(void)
                 snprintf(chrow, sizeof(chrow), "%s", var ? var : g->name);
 
             enum { M_LINK, M_UNLOCK, M_RECORDS, M_INFO, M_PLAYERS, M_INV,
-                   M_TEAMS, M_BACKUPS, M_EXPORT, M_SWITCH, M_QUIT };
-            const char *items[11];
-            int ids[11], ni = 0;
+                   M_TEAMS, M_BACKUPS, M_EXPORT, M_UPDATE, M_SWITCH, M_QUIT };
+            const char *items[12];
+            int ids[12], ni = 0;
             items[ni] = linkrow; ids[ni++] = M_LINK;
             items[ni] = g->unlock_label; ids[ni++] = M_UNLOCK;
             if (g->records_n) { items[ni] = "Unlock all play records"; ids[ni++] = M_RECORDS; }
@@ -305,6 +305,7 @@ int main(void)
             if (g->t_count) { items[ni] = "Custom teams (tactics)"; ids[ni++] = M_TEAMS; }
             items[ni] = "Backups (new, restore, rename)"; ids[ni++] = M_BACKUPS;
             items[ni] = "Export / import save file"; ids[ni++] = M_EXPORT;
+            items[ni] = "Check for updates"; ids[ni++] = M_UPDATE;
             items[ni] = "Switch save"; ids[ni++] = M_SWITCH;
             items[ni] = "Quit"; ids[ni++] = M_QUIT;
 
@@ -339,6 +340,7 @@ int main(void)
             case M_TEAMS: teams_editor(&ctx); break;
             case M_BACKUPS: backup_manager(&ctx); break;
             case M_EXPORT: export_import(&ctx); break;
+            case M_UPDATE: self_update(); break;
             }
         }
         unload(&ctx);
