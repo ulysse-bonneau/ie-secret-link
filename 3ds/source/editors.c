@@ -1649,7 +1649,7 @@ void inventory_editor(SaveCtx *ctx)
     }
 
     ui_header();
-    if (!ui_dialog("I understand", "Galaxy guards the inventory with a\nchecksum; IESM disarms it on commit\n(sets it to the game's 'no checksum'\nstate, as on fresh saves).\n\nAuto-backups protect every commit;\nrestore the newest backup if anything\nlooks wrong.", false))
+    if (!ui_dialog("browse anyway", "CONFIRMED: committing inventory edits\nCORRUPTS Galaxy saves - the game guards\nthis region with a checksum IESM cannot\nreproduce. This is not fixable here.\n\nTo duplicate items, use AR cheats\n(Checkpoint / Rosalina): the game saves\nthem with a valid checksum.\n\nViewing is safe. Do NOT commit edits.", true))
         return;
 
     u32 snap_start = g->g1_off;
@@ -2423,15 +2423,6 @@ bool apply_changes(SaveCtx *ctx)
     }
 
     ui_header();
-    if (g->magic == 0x40F1) {
-        /* Galaxy guards counters+inventory with a FE FF-tagged u16 checksum
-         * pair; a zero pair means "no checksum" and the game skips
-         * validation (dormant state every fresh save starts in). We cannot
-         * compute the value, so we disarm it instead. */
-        memset(ctx->plain + 0x8F6A, 0, 2);
-        memset(ctx->plain + 0x9F16, 0, 2);
-        logline("galaxy checksum pair disarmed");
-    }
     printf("\n Backing up original save to SD...\n");
     if (!backup_save(ctx, NULL)) {
         ui_notice("Backup FAILED, save untouched.", false);

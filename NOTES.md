@@ -134,3 +134,17 @@ IESM: unlock no longer writes those two fields, and every Galaxy commit zeros
 the pair to restore the dormant state. The checksum algorithm itself remains
 uncracked (all CRC16 polys, sums, Fletcher, word-hashes excluded on 4 samples)
 — and no longer needs to be.
+
+
+## Checksum: unsolved, feature abandoned (v0.15.6)
+
+The v0.15.5 "zero the pair to disarm" theory FAILED on hardware: a committed
+save with 0x8F6A/0x9F16 = 0000 still corrupts. So zeroing does not return the
+game to its dormant (validation-skipped) state once it has begun maintaining
+the checksum. The game .code (exefs .code, 3.4 MB) contains NO CRC16/CRC32
+lookup table, so the routine is bespoke/bitwise. Cracking it needs full ARM
+disassembly with no guarantee. Decision: abandon direct inventory editing;
+inventory is view-only-with-warning, and item duplication is delegated to AR
+cheats (which route through the game's own save path). Kept: gen_unlock.py
+still excludes the donor-checksum bytes at 0x8F62/0x8F6A so the SD-Link unlock
+never arms validation.

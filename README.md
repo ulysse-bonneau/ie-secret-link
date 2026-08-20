@@ -34,24 +34,26 @@ A `.3dsx` for Homebrew Launcher is on the release page too. Once installed, use
   sorted per game under `sd:/IESM/<game>/`. Advanced submenu has debug diff/checksum tools.
 - Two-screen UI; a running log on the bottom screen and in `sd:/IESM/log.txt`.
 
-## The Galaxy inventory checksum (solved)
+## Galaxy inventory editing is unsafe — use AR cheats instead
 
-Galaxy guards its counters + inventory region with a `FE FF`-tagged u16 checksum stored
-at `0x8F6A` and `0x9F16`. On fresh saves the pair is **zero and the game skips
-validation**. The reference editor's "unlock all data" byte-set accidentally contains a
-donor save's checksum value at `0x8F6A` — writing it **arms** the game's validation, and
-from then on any external inventory edit reads as "corrupted" (that's the desktop
-editor's issue #14, and it bit this project too).
+Galaxy guards its counter+inventory region with a custom Level-5 checksum (a
+`FE FF`-tagged u16 pair at `0x8F6A`/`0x9F16`, plus related fields). IESM can't
+reproduce it — every standard CRC16/CRC32/sum/Fletcher/word-hash was ruled out
+against real samples, and the game's executable contains no CRC table, so it's a
+bespoke bitwise routine. **Committing inventory quantity edits corrupts Galaxy
+saves.** The reference desktop editor has the identical limitation (its issue #14).
 
-IESM handles it both ways: the unlock no longer writes those two bytes, and every Galaxy
-commit **zeros the checksum pair**, returning the save to the dormant no-checksum state
-the game itself uses. Inventory editing is therefore safe again.
+To duplicate items, use **AR cheat codes** via Checkpoint or Luma's Rosalina cheat
+menu (e.g. "All items ×99"). Cheats patch live RAM and the *game* writes the save,
+so the checksum is always valid. If a ×99 cheat inflates your PalPack cards, note
+that IESM can't safely trim them either — do it in-game.
 
-If a "×99 items" cheat leaves your **PalPack cards at ×99**, Inventory → Batch actions →
-**PalPack cards → x1** trims them back.
+IESM keeps the inventory **viewer** (browse what you own, by category) but warns
+before any edit. Everything else IESM writes — secret link, players, teams, save
+info, records, banks — lives outside this region and is safe.
 
-Recovery note: if a save ever shows "corrupted", restore the **newest** backup first —
-the save carries an anti-rollback counter, so older backups can be rejected as rollbacks.
+Recovery: if a save shows "corrupted", restore the **newest** backup first — the
+save carries an anti-rollback counter and older backups can be rejected.
 
 ## Repo layout
 
