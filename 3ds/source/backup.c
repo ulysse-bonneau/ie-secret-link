@@ -203,8 +203,21 @@ static void diff_backups(SaveCtx *ctx, const char *dir, const char *na, const ch
             if (a[i] != b[i]) last = i;
             i++;
         }
-        snprintf(rows[n], 48, "0x%06lX +%-4ld %s", start, last - start + 1,
-                 region_of(ctx->game, (u32)start));
+        long rl = last - start + 1;
+        if (rl <= 4) {
+            char va[12], vb[12];
+            int o = 0;
+            for (long k = 0; k < rl; k++) {
+                snprintf(va + o, 3, "%02X", a[start + k]);
+                snprintf(vb + o, 3, "%02X", b[start + k]);
+                o += 2;
+            }
+            snprintf(rows[n], 48, "0x%06lX %s->%s %s", start, va, vb,
+                     region_of(ctx->game, (u32)start));
+        } else {
+            snprintf(rows[n], 48, "0x%06lX +%-4ld %s", start, rl,
+                     region_of(ctx->game, (u32)start));
+        }
         logline("  %s", rows[n]);
         lines[n] = rows[n];
         n++;
@@ -218,6 +231,66 @@ static void diff_backups(SaveCtx *ctx, const char *dir, const char *na, const ch
     ui_list("Diff (also in log.txt)", lines, n, 0);
     free(a);
     free(b);
+}
+
+
+/* test whether the u32 at 0x28 is a running CRC32 or byte-sum over [a..b) */
+static void hunt_checksum(SaveCtx *ctx, const char *dir, const char *bakname)
+{
+    char full[0x300];
+    snprintf(full, sizeof(full), "%s/%s", dir, bakname);
+    long size = 0;
+    u8 *p = load_bak_plain(full, &size);
+    if (!p) {
+        ui_header();
+        ui_notice("Could not read the backup.", false);
+        return;
+    }
+    u32 target;
+    memcpy(&target, p + 0x28, 4);
+
+    static char rows[24][48];
+    const char *lines[24];
+    int n = 0;
+    snprintf(rows[n], 48, "target @0x28 = %08lX", (unsigned long)target);
+    logline("%s", rows[n]);
+    lines[n] = rows[n];
+    n++;
+
+    static const u32 starts[] = { 0x2C, 0x30, 0x34, 0x40, 0x80, 0x100, 0x200, 0x400 };
+    u32 end = (u32)size - 8;
+    for (u32 s = 0; s < sizeof(starts) / sizeof(*starts) && n < 22; s++) {
+        u32 a = starts[s];
+        u32 crc = 0xFFFFFFFF;
+        u32 sum = 0;
+        for (u32 i = a; i < end; i++) {
+            crc ^= p[i];
+            for (int k = 0; k < 8; k++)
+                crc = (crc >> 1) ^ (0xEDB88320 & (0 - (crc & 1)));
+            sum += p[i];
+            u32 cv = ~crc;
+            if (cv == target && n < 22) {
+                snprintf(rows[n], 48, "CRC32 [%05lX..%05lX] MATCH", (unsigned long)a, (unsigned long)(i + 1));
+                logline("%s", rows[n]);
+                lines[n] = rows[n];
+                n++;
+            }
+            if (sum == target && target > 0x10000 && n < 22) {
+                snprintf(rows[n], 48, "SUM   [%05lX..%05lX] MATCH", (unsigned long)a, (unsigned long)(i + 1));
+                logline("%s", rows[n]);
+                lines[n] = rows[n];
+                n++;
+            }
+        }
+    }
+    free(p);
+    if (n == 1) {
+        snprintf(rows[n], 48, "no CRC32/sum match found");
+        logline("%s", rows[n]);
+        lines[n] = rows[n];
+        n++;
+    }
+    ui_list("Checksum hunt (also in log)", lines, n, 0);
 }
 
 #define MAX_BAKS 100
@@ -269,8 +342,9 @@ void backup_manager(SaveCtx *ctx)
 
         char *bak = names[pick - 1];
         const char *actions[] = { "Restore over current save", "Rename", "Delete",
-                                  "Diff against another backup", "Back" };
-        int act = ui_list(bak, actions, 5, 0);
+                                  "Diff against another backup", "Hunt checksum @0x28", "Back" };
+        int act = ui_list(bak, actions, 6, 0);
+        if (act == 4) { hunt_checksum(ctx, dir, bak); continue; }
         if (act == 3) {
             const char *lines2[MAX_BAKS];
             int m = 0;
