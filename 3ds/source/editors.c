@@ -1562,6 +1562,7 @@ static int batch_qty(SaveCtx *ctx, const u8 *subs, int nsubs, int qty)
                 memcpy(&eq, ctx->plain + e + 12, 4);
                 if (v < eq) v = eq;
             }
+            if (v == cur) continue; /* count and write only real changes */
             memcpy(ctx->plain + e + 8, &v, 4);
             changed++;
         }
