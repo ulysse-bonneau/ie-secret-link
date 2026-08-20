@@ -9,7 +9,7 @@
 #include "avatars_db.h"
 #include "records_db.h"
 
-#define VERSION "v0.13.1"
+#define VERSION "v0.13.2"
 
 #define BACKUP_DIR     "/IESM"
 #define OLD_BACKUP_DIR "/ie-secret-link"
@@ -41,6 +41,7 @@ typedef struct {
     u32 p_style_off;       /* 0 = no style field (GO) */
     u32 p_part_off;        /* participation s16, score = +2 */
     u32 p_key_off;         /* GO only: key-player byte (0 = none) */
+    bool has_seesaw;       /* GO/CS trade stats at 0 freedom; Galaxy cannot */
     u32 totem_off;         /* Galaxy only: totem id at block start (0 = none) */
     u32 records_off; int records_n; /* play-record bitfield bytes (0 = unknown) */
     const RecordInfo *rdb; int rdb_count;

@@ -424,6 +424,11 @@ static bool train_plus(SaveCtx *ctx, u32 blk, const PlayerInfo *pi, int i)
         wr16(ctx, blk + g->p_gp_off + 4, (s16)(freedom - 1));
         return true;
     }
+    if (!g->has_seesaw) {
+        ui_header();
+        ui_notice("No freedom points left.\n(Galaxy has no stat trade-off.)", false);
+        return false;
+    }
     int p = pos_index(pi);
     int victim = (p >= 0) ? SEESAW[p][i] : -1;
     if (victim >= 0 &&
@@ -1100,7 +1105,7 @@ static void edit_player(SaveCtx *ctx, u32 blk, const PlayerInfo *pi)
                 int p = pos_index(pi);
                 int pair_inv = 0;
                 int victim = -1;
-                if (p >= 0) {
+                if (g->has_seesaw && p >= 0) {
                     victim = SEESAW[p][i];
                     pair_inv = rd16(ctx, blk + g->p_invest_off + victim * 2);
                 }
