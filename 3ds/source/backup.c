@@ -134,6 +134,92 @@ static int cmp_desc(const void *a, const void *b)
     return strcmp((const char *)b, (const char *)a);
 }
 
+
+/* decrypt a backup fully; caller frees */
+static u8 *load_bak_plain(const char *full, long *size_out)
+{
+    FILE *in = fopen(full, "rb");
+    if (!in) return NULL;
+    fseek(in, 0, SEEK_END);
+    long size = ftell(in);
+    fseek(in, 0, SEEK_SET);
+    u8 *buf = malloc(size);
+    bool ok = fread(buf, 1, size, in) == (size_t)size;
+    fclose(in);
+    if (!ok || size < 0x1000) { free(buf); return NULL; }
+    ie_xor_body(buf, (u32)size);
+    *size_out = size;
+    return buf;
+}
+
+static const char *region_of(const GameDef *g, u32 i)
+{
+    if (i >= g->pdata_off && i < g->pdata_off + (u32)g->pmax * g->pblock) return "players";
+    if (i >= g->pindex_off && i < g->pindex_off + (u32)g->pmax * 4) return "roster idx";
+    if (i >= g->g1_off && i < g->g1_off + (u32)g->g1_n * 12) return "items g1";
+    if (i >= g->g2_off && i < g->g2_off + (u32)g->g2_n * 16) return "items g2";
+    if (i >= g->g3_off && i < g->g3_off + (u32)g->g3_n * 8) return "items g3";
+    if (g->t_count && i >= g->t_info && i < g->t_players + (u32)g->t_count * 0x40) return "teams";
+    if (i >= g->link_off && i < g->link_off + 4) return "link";
+    if (g->records_n && i >= g->records_off && i < g->records_off + (u32)g->records_n) return "records";
+    if (i >= g->money_off && i < g->money_off + 8) return "money";
+    if (g->coin_off && i >= g->coin_off && i < g->coin_off + 10) return "coins";
+    if (i < 0x100) return "header";
+    return "?";
+}
+
+/* byte-diff two decrypted backups, merged into runs, on screen and log */
+static void diff_backups(SaveCtx *ctx, const char *dir, const char *na, const char *nb)
+{
+    char full[0x300];
+    long sa = 0, sb = 0;
+    snprintf(full, sizeof(full), "%s/%s", dir, na);
+    u8 *a = load_bak_plain(full, &sa);
+    snprintf(full, sizeof(full), "%s/%s", dir, nb);
+    u8 *b = load_bak_plain(full, &sb);
+    if (!a || !b) {
+        free(a); free(b);
+        ui_header();
+        ui_notice("Could not read both backups.", false);
+        return;
+    }
+    long len = (sa < sb) ? sa : sb;
+
+    static char rows[200][48];
+    const char *lines[201];
+    int n = 0;
+    logline("diff %s vs %s:", na, nb);
+    if (sa != sb) {
+        snprintf(rows[n], 48, "sizes differ: %ld vs %ld", sa, sb);
+        logline("%s", rows[n]);
+        lines[n] = rows[n];
+        n++;
+    }
+    long i = 0;
+    while (i < len - 8 && n < 200) {
+        if (a[i] == b[i]) { i++; continue; }
+        long start = i, last = i;
+        while (i < len - 8 && i - last < 16) {
+            if (a[i] != b[i]) last = i;
+            i++;
+        }
+        snprintf(rows[n], 48, "0x%06lX +%-4ld %s", start, last - start + 1,
+                 region_of(ctx->game, (u32)start));
+        logline("  %s", rows[n]);
+        lines[n] = rows[n];
+        n++;
+    }
+    if (!n) {
+        snprintf(rows[n], 48, "identical (outside trailer)");
+        lines[n] = rows[n];
+        n++;
+    }
+    logline("diff done: %d run(s)", n);
+    ui_list("Diff (also in log.txt)", lines, n, 0);
+    free(a);
+    free(b);
+}
+
 #define MAX_BAKS 100
 #define BAKNAME 56
 
@@ -182,8 +268,22 @@ void backup_manager(SaveCtx *ctx)
         }
 
         char *bak = names[pick - 1];
-        const char *actions[] = { "Restore over current save", "Rename", "Delete", "Back" };
-        int act = ui_list(bak, actions, 4, 0);
+        const char *actions[] = { "Restore over current save", "Rename", "Delete",
+                                  "Diff against another backup", "Back" };
+        int act = ui_list(bak, actions, 5, 0);
+        if (act == 3) {
+            const char *lines2[MAX_BAKS];
+            int m = 0;
+            for (int i = 0; i < n; i++)
+                if (i != pick - 1) lines2[m++] = names[i];
+            if (!m) continue;
+            int other = ui_list("Diff against...", lines2, m, 0);
+            if (other < 0) continue;
+            /* map back to names[] skipping the selected one */
+            int oi = (other >= pick - 1) ? other + 1 : other;
+            diff_backups(ctx, dir, bak, names[oi]);
+            continue;
+        }
         if (act == 0) {
             char full[0x300];
             struct stat st;
