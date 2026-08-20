@@ -293,6 +293,97 @@ static void hunt_checksum(SaveCtx *ctx, const char *dir, const char *bakname)
     ui_list("Checksum hunt (also in log)", lines, n, 0);
 }
 
+
+/* hunt a u16 checksum: target read at 0x9F16, algorithms x range grid;
+ * also locates every other occurrence of the same u16 nearby (mirror) */
+static void hunt_checksum16(SaveCtx *ctx, const char *dir, const char *bakname)
+{
+    char full[0x300];
+    snprintf(full, sizeof(full), "%s/%s", dir, bakname);
+    long size = 0;
+    u8 *p = load_bak_plain(full, &size);
+    if (!p) {
+        ui_header();
+        ui_notice("Could not read the backup.", false);
+        return;
+    }
+    u16 target;
+    memcpy(&target, p + 0x9F16, 2);
+    u16 target_be = (u16)((target >> 8) | (target << 8));
+
+    static char rows[40][48];
+    const char *lines[40];
+    int n = 0;
+    snprintf(rows[n], 48, "target u16 @9F16 = %04X", target);
+    logline("%s", rows[n]);
+    lines[n] = rows[n];
+    n++;
+
+    /* mirrors: same u16 in 0x8000..0xA400 */
+    for (u32 i = 0x8000; i < 0xA400 && n < 8; i += 1) {
+        if (i == 0x9F16) continue;
+        u16 v;
+        memcpy(&v, p + i, 2);
+        if (v == target) {
+            snprintf(rows[n], 48, "mirror u16 at 0x%05lX", (unsigned long)i);
+            logline("%s", rows[n]);
+            lines[n] = rows[n];
+            n++;
+        }
+    }
+
+    static const u32 starts[] = { 0x9F18, 0x9F1C, 0x9F20, 0x9F56, 0x9F6C, 0xA000, 0xA394 };
+    static const u32 ends[]   = { 0xA394, 0xC020, 0xDC6C, 0xF82C, 0xF83C, 0x26E28, 0x27400 };
+    for (u32 s = 0; s < sizeof(starts) / sizeof(*starts) && n < 38; s++) {
+        u32 a = starts[s];
+        u32 sum = 0;
+        u16 ccitt = 0xFFFF, ccitt0 = 0, ibm = 0;
+        u32 crc = 0xFFFFFFFF;
+        u32 emax = (u32)size - 8;
+        for (u32 i = a; i < emax; i++) {
+            u8 c = p[i];
+            sum += c;
+            ccitt ^= (u16)(c << 8);
+            ccitt0 ^= (u16)(c << 8);
+            for (int k = 0; k < 8; k++) {
+                ccitt = (ccitt & 0x8000) ? (u16)((ccitt << 1) ^ 0x1021) : (u16)(ccitt << 1);
+                ccitt0 = (ccitt0 & 0x8000) ? (u16)((ccitt0 << 1) ^ 0x1021) : (u16)(ccitt0 << 1);
+            }
+            ibm ^= c;
+            for (int k = 0; k < 8; k++)
+                ibm = (ibm & 1) ? (u16)((ibm >> 1) ^ 0xA001) : (u16)(ibm >> 1);
+            crc ^= c;
+            for (int k = 0; k < 8; k++)
+                crc = (crc >> 1) ^ (0xEDB88320 & (0 - (crc & 1)));
+            /* check at each candidate end (i+1) */
+            for (u32 e2 = 0; e2 < sizeof(ends) / sizeof(*ends); e2++) {
+                if (i + 1 != ends[e2] || ends[e2] <= a) continue;
+                struct { const char *nm; u16 v; } cand[] = {
+                    { "sum16", (u16)sum }, { "ccittF", ccitt }, { "ccitt0", ccitt0 },
+                    { "crc16", ibm }, { "crc32lo", (u16)~crc },
+                };
+                for (u32 c2 = 0; c2 < 5 && n < 38; c2++) {
+                    if (cand[c2].v != target && cand[c2].v != target_be) continue;
+                    snprintf(rows[n], 48, "%s [%05lX..%05lX] MATCH%s", cand[c2].nm,
+                             (unsigned long)a, (unsigned long)(i + 1),
+                             (cand[c2].v == target_be) ? " (BE)" : "");
+                    logline("%s", rows[n]);
+                    lines[n] = rows[n];
+                    n++;
+                }
+            }
+        }
+    }
+    free(p);
+    if (n <= 1) {
+        snprintf(rows[n], 48, "no u16 match found");
+        lines[n] = rows[n];
+        n++;
+    }
+    logline("hunt16 done");
+    ui_list("Checksum hunt v2 (also in log)", lines, n, 0);
+}
+
 #define MAX_BAKS 100
 #define BAKNAME 56
 
@@ -342,9 +433,11 @@ void backup_manager(SaveCtx *ctx)
 
         char *bak = names[pick - 1];
         const char *actions[] = { "Restore over current save", "Rename", "Delete",
-                                  "Diff against another backup", "Hunt checksum @0x28", "Back" };
-        int act = ui_list(bak, actions, 6, 0);
+                                  "Diff against another backup", "Hunt checksum @0x28",
+                                  "Hunt u16 checksum @0x9F16", "Back" };
+        int act = ui_list(bak, actions, 7, 0);
         if (act == 4) { hunt_checksum(ctx, dir, bak); continue; }
+        if (act == 5) { hunt_checksum16(ctx, dir, bak); continue; }
         if (act == 3) {
             const char *lines2[MAX_BAKS];
             int m = 0;
