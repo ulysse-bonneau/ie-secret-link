@@ -5,7 +5,7 @@
 #include "app.h"
 
 #define REPO "ulysse-bonneau/iesm"
-#define API_URL "https://api.github.com/repos/" REPO "/releases/latest"
+#define LATEST_URL "https://github.com/" REPO "/releases/latest"
 #define CIA_URL "https://github.com/" REPO "/releases/latest/download/iesm.cia"
 
 /* open a context following redirects; caller closes */
@@ -40,28 +40,33 @@ static Result http_open(httpcContext *ctx, const char *url)
     return -1;
 }
 
-/* fetch latest tag_name into out (e.g. "v0.14.3"); true on success */
+/* latest tag from the /releases/latest redirect Location header
+ * (github.com works from the 3DS TLS stack; api.github.com does not) */
 static bool fetch_latest_tag(char *out, size_t outsz)
 {
     httpcContext ctx;
-    if (R_FAILED(http_open(&ctx, API_URL))) return false;
-    static char body[0x8000];
-    u32 got = 0, total = 0;
-    while (total < sizeof(body) - 1) {
-        Result rc = httpcDownloadData(&ctx, (u8 *)body + total, sizeof(body) - 1 - total, &got);
-        if (got) total += got;
-        if (rc == 0) break;
-        if (rc != (Result)HTTPC_RESULTCODE_DOWNLOADPENDING) break;
+    if (R_FAILED(httpcOpenContext(&ctx, HTTPC_METHOD_GET, LATEST_URL, 1))) return false;
+    httpcSetSSLOpt(&ctx, SSLCOPT_DisableVerify);
+    httpcAddRequestHeaderField(&ctx, "User-Agent", "IESM");
+    bool ok = false;
+    char loc[0x200] = "";
+    if (R_SUCCEEDED(httpcBeginRequest(&ctx))) {
+        u32 status = 0;
+        if (R_SUCCEEDED(httpcGetResponseStatusCode(&ctx, &status)) &&
+            status >= 300 && status < 400 &&
+            R_SUCCEEDED(httpcGetResponseHeader(&ctx, "Location", loc, sizeof(loc))))
+            ok = true;
     }
     httpcCloseContext(&ctx);
-    body[total] = 0;
-    const char *p = strstr(body, "\"tag_name\":\"");
+    if (!ok) return false;
+    const char *p = strstr(loc, "/tag/");
     if (!p) return false;
-    p += 12;
-    const char *e = strchr(p, '"');
-    if (!e || (size_t)(e - p) >= outsz) return false;
-    memcpy(out, p, (size_t)(e - p));
-    out[e - p] = 0;
+    p += 5;
+    size_t l = strlen(p);
+    while (l && (p[l - 1] == '\r' || p[l - 1] == '\n' || p[l - 1] == '/')) l--;
+    if (!l || l >= outsz) return false;
+    memcpy(out, p, l);
+    out[l] = 0;
     return true;
 }
 
