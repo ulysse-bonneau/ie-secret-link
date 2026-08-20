@@ -223,3 +223,69 @@ void send_file_to_pc(const char *path, const char *name)
     free(buf);
     ui_notice(ok ? "Sent." : "Send FAILED (server running? same\nWi-Fi? IP correct?).", ok);
 }
+
+/* upload a file to bashupload.com; shows the one-time download URL */
+void send_file_to_internet(const char *path, const char *name)
+{
+    FILE *in = fopen(path, "rb");
+    if (!in) {
+        ui_header();
+        ui_notice("Could not read the file.", false);
+        return;
+    }
+    fseek(in, 0, SEEK_END);
+    long size = ftell(in);
+    fseek(in, 0, SEEK_SET);
+    u8 *buf = malloc(size);
+    bool rok = fread(buf, 1, size, in) == (size_t)size;
+    fclose(in);
+    if (!rok) {
+        free(buf);
+        return;
+    }
+
+    ui_header();
+    printf(" Uploading %s (%ld b)...\n", name, size);
+    static char body[0x800];
+    u32 total = 0;
+    bool ok = false;
+    if (R_SUCCEEDED(httpcInit(0))) {
+        char url[0x120];
+        snprintf(url, sizeof(url), "https://bashupload.com/%s", name);
+        httpcContext ctx;
+        if (R_SUCCEEDED(httpcOpenContext(&ctx, HTTPC_METHOD_PUT, url, 1))) {
+            httpcSetSSLOpt(&ctx, SSLCOPT_DisableVerify);
+            httpcAddRequestHeaderField(&ctx, "User-Agent", "IESM");
+            httpcAddPostDataRaw(&ctx, (const u32 *)buf, (u32)size);
+            if (R_SUCCEEDED(httpcBeginRequest(&ctx))) {
+                u32 status = 0;
+                httpcGetResponseStatusCode(&ctx, &status);
+                if (status == 200) {
+                    u32 got = 0;
+                    while (total < sizeof(body) - 1) {
+                        Result rc = httpcDownloadData(&ctx, (u8 *)body + total,
+                                                      sizeof(body) - 1 - total, &got);
+                        if (got) total += got;
+                        if (rc == 0) break;
+                        if (rc != (Result)HTTPC_RESULTCODE_DOWNLOADPENDING) break;
+                    }
+                    body[total] = 0;
+                    ok = true;
+                }
+            }
+            httpcCloseContext(&ctx);
+        }
+        httpcExit();
+    }
+    free(buf);
+    ui_header();
+    if (ok) {
+        printf(C_OK " Uploaded. Download URL (one use):" C_RESET "\n\n%s\n", body);
+        logline("uploaded %s:", name);
+        logline("%s", body);
+        printf("\n" C_DIM " (also written to log.txt)\n Press any key." C_RESET "\n");
+        wait_key();
+    } else {
+        ui_notice("Upload FAILED.", false);
+    }
+}

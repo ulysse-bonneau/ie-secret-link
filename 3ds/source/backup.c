@@ -434,14 +434,16 @@ void backup_manager(SaveCtx *ctx)
         char *bak = names[pick - 1];
         const char *actions[] = { "Restore over current save", "Rename", "Delete",
                                   "Diff against another backup", "Hunt checksum @0x28",
-                                  "Hunt u16 checksum @0x9F16", "Send to PC (Wi-Fi)", "Back" };
-        int act = ui_list(bak, actions, 8, 0);
+                                  "Hunt u16 checksum @0x9F16", "Send to PC (Wi-Fi)",
+                                  "Upload to internet (bashupload)", "Back" };
+        int act = ui_list(bak, actions, 9, 0);
         if (act == 4) { hunt_checksum(ctx, dir, bak); continue; }
         if (act == 5) { hunt_checksum16(ctx, dir, bak); continue; }
-        if (act == 6) {
+        if (act == 6 || act == 7) {
             char full2[0x300];
             snprintf(full2, sizeof(full2), "%s/%s", dir, bak);
-            send_file_to_pc(full2, bak);
+            if (act == 6) send_file_to_pc(full2, bak);
+            else send_file_to_internet(full2, bak);
             continue;
         }
         if (act == 3) {
