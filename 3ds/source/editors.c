@@ -1645,6 +1645,10 @@ void inventory_editor(SaveCtx *ctx)
         return;
     }
 
+    ui_header();
+    if (!ui_dialog("I understand", "KNOWN ISSUE: committing inventory\nchanges corrupts Galaxy saves\n(under investigation, see README).\n\nBrowsing is safe; auto-backups\nprotect every commit.", true))
+        return;
+
     u32 snap_start = g->g1_off;
     u32 snap_len = inv_end - snap_start;
     u8 *snap = malloc(snap_len);
