@@ -225,8 +225,12 @@ static const SaveEntry *save_picker(void)
     const char *lines[MAX_SAVES];
     for (int i = 0; i < n_entries; i++) {
         const char *var = tid_variant(entries[i].tid);
-        snprintf(labels[i], 48, "%-21s %-4s %s", var ? var : entries[i].game->name,
-                 entries[i].media_name, entries[i].filepath);
+        /* media first, then game, then the file basename (the part that
+         * actually distinguishes two saves) so it survives the row clamp */
+        const char *fn = strrchr(entries[i].filepath, '/');
+        fn = fn ? fn + 1 : entries[i].filepath;
+        snprintf(labels[i], 48, "%-4s %-22s %s", entries[i].media_name,
+                 var ? var : entries[i].game->name, fn);
         lines[i] = labels[i];
     }
     int pick = ui_list("Select a save", lines, n_entries, 0);
@@ -293,21 +297,29 @@ int main(void)
                 snprintf(chrow, sizeof(chrow), "%s", var ? var : g->name);
 
             enum { M_LINK, M_UNLOCK, M_RECORDS, M_INFO, M_PLAYERS, M_INV,
-                   M_TEAMS, M_BACKUPS, M_EXPORT, M_UPDATE, M_SWITCH, M_QUIT };
-            const char *items[12];
-            int ids[12], ni = 0;
-            items[ni] = linkrow; ids[ni++] = M_LINK;
-            items[ni] = g->unlock_label; ids[ni++] = M_UNLOCK;
-            if (g->records_n) { items[ni] = "Unlock all play records"; ids[ni++] = M_RECORDS; }
-            items[ni] = "Save info (name, money, time)"; ids[ni++] = M_INFO;
-            items[ni] = "Players (level, stats, moves)"; ids[ni++] = M_PLAYERS;
-            items[ni] = "Inventory (items)"; ids[ni++] = M_INV;
-            if (g->t_count) { items[ni] = "Custom teams (tactics)"; ids[ni++] = M_TEAMS; }
-            items[ni] = "Backups (new, restore, rename)"; ids[ni++] = M_BACKUPS;
-            items[ni] = "Export / import save file"; ids[ni++] = M_EXPORT;
-            items[ni] = "Check for updates"; ids[ni++] = M_UPDATE;
-            items[ni] = "Switch save"; ids[ni++] = M_SWITCH;
-            items[ni] = "Quit"; ids[ni++] = M_QUIT;
+                   M_TEAMS, M_BACKUPS, M_EXPORT, M_UPDATE, M_SWITCH, M_QUIT, M_HDR };
+            const char *items[18];
+            int ids[18], ni = 0;
+            #define ROW(s, id) do { items[ni] = (s); ids[ni++] = (id); } while (0)
+            #define SEC(s)     ROW("\x1f" s, M_HDR)
+            SEC("Edit");
+            ROW("Players (level, stats, moves)", M_PLAYERS);
+            ROW("Inventory (items)", M_INV);
+            if (g->t_count) ROW("Custom teams (tactics)", M_TEAMS);
+            ROW("Save info (name, money, time)", M_INFO);
+            SEC("Unlocks");
+            ROW(linkrow, M_LINK);
+            ROW(g->unlock_label, M_UNLOCK);
+            if (g->records_n) ROW("Unlock play records", M_RECORDS);
+            SEC("Save file");
+            ROW("Backups (new, restore, rename)", M_BACKUPS);
+            ROW("Export / import save file", M_EXPORT);
+            ROW("Switch save", M_SWITCH);
+            SEC("App");
+            ROW("Check for updates", M_UPDATE);
+            ROW("Quit", M_QUIT);
+            #undef ROW
+            #undef SEC
 
             int delta = 0;
             int pick = ui_list_adj(chrow, items, ni, cursor, &delta);

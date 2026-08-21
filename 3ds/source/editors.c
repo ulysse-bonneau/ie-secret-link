@@ -1,5 +1,6 @@
 #include <dirent.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -236,7 +237,12 @@ void records_unlock(SaveCtx *ctx)
             lines[n] = rows[n];
             n++;
         }
-        int pick = ui_list("Play records (A: toggle)", lines, n, cursor);
+        int on = 0;
+        for (int i = 0; i < g->rdb_count; i++)
+            if ((ctx->plain[g->records_off + g->rdb[i].group] >> record_bit(g, i)) & 1) on++;
+        char rtitle[40];
+        snprintf(rtitle, sizeof(rtitle), "Records %d/%d (A toggle)", on, g->rdb_count);
+        int pick = ui_list(rtitle, lines, n, cursor);
         if (pick < 0) break;
         cursor = pick;
         if (pick == 0) {
@@ -934,6 +940,7 @@ static int player_bank_browser(SaveCtx *ctx, int count)
             ui_notice("Bank empty. In a player's screen,\nuse [ Store in player bank ].", false);
             return added;
         }
+        qsort(names, n, 48, name_asc_cmp);
         const char *lines[64];
         for (int i = 0; i < n; i++) lines[i] = names[i];
         int pick = ui_list("Player bank", lines, n, cursor);
@@ -998,6 +1005,7 @@ static void god_mode(SaveCtx *ctx, u32 blk, const char *pname)
         static const struct { u32 rel; int min, max; bool byte; } F[4] = {
             { 6, 1, 99, true }, { 0, 1, 999, false }, { 2, 1, 999, false }, { 4, 0, 9999, false },
         };
+        if (delta == 2 || delta == 3) continue;  /* X/Y: no action here */
         int v;
         if (pick < 4) {
             u32 off = blk + gp + F[pick].rel;
@@ -1046,33 +1054,35 @@ static void edit_player(SaveCtx *ctx, u32 blk, const PlayerInfo *pi)
         int budget = freedom + inv_sum;
         int level = ctx->plain[blk + gp + 6];
 
-        char rows[20][48];
+        char rows[21][48];
         snprintf(rows[0], 48, "Level      %d", level);
         snprintf(rows[1], 48, "GP         %d", rd16(ctx, blk + gp));
         snprintf(rows[2], 48, "TP         %d", rd16(ctx, blk + gp + 2));
-        snprintf(rows[3], 48, "Freedom left    %d", freedom);
+        snprintf(rows[3], 48, "Freedom    %d  (left; spend on stats)", freedom);
         for (int i = 0; i < 8; i++) {
             int b = stat_base(pi, i, level);
             snprintf(rows[4 + i], 48, "%-9s %3d %+4d = %d", STAT_NAMES[i], b, inv[i], b + inv[i]);
         }
-        snprintf(rows[12], 48, "[ God mode (free edit) ]");
-        snprintf(rows[13], 48, "[ Reset freedom & invested points ]");
-        snprintf(rows[14], 48, "[ Replace with another player ]");
-        snprintf(rows[15], 48, "[ Moves ]");
-        snprintf(rows[16], 48, "[ Avatar ]");
-        snprintf(rows[17], 48, "[ Equipment ]");
-        snprintf(rows[18], 48, "[ Flags & counters ]");
-        snprintf(rows[19], 48, "[ Store in player bank ]");
-        const char *lines[20];
-        for (int i = 0; i < 20; i++) lines[i] = rows[i];
+        snprintf(rows[12], 48, "\x1fActions");
+        snprintf(rows[13], 48, "[ Moves ]");
+        snprintf(rows[14], 48, "[ Avatar ]");
+        snprintf(rows[15], 48, "[ Equipment ]");
+        snprintf(rows[16], 48, "[ Flags & counters ]");
+        snprintf(rows[17], 48, "[ God mode (free stat edit) ]");
+        snprintf(rows[18], 48, "[ Reset freedom & invested points ]");
+        snprintf(rows[19], 48, "[ Replace with another player ]");
+        snprintf(rows[20], 48, "[ Store in player bank ]");
+        const char *lines[21];
+        for (int i = 0; i < 21; i++) lines[i] = rows[i];
 
         char ptitle[48];
         snprintf(ptitle, sizeof(ptitle), "%s%s", pi->name,
-                 (level < 99) ? " (bases = Lv99 values)" : "");
+                 (level < 99) ? " (Lv99 bases)" : "");
         int delta = 0;
-        int pick = ui_list_adj(ptitle, lines, 20, cursor, &delta);
+        int pick = ui_list_adj(ptitle, lines, 21, cursor, &delta);
         if (pick < 0) return;
         cursor = pick;
+        if (delta == 2 || delta == 3) continue;  /* X/Y: no action here */
 
         int v;
         if (pick == 0) {
@@ -1141,9 +1151,17 @@ static void edit_player(SaveCtx *ctx, u32 blk, const PlayerInfo *pi)
                 wr16(ctx, blk + g->p_invest_off + i * 2, (s16)ninv);
                 wr16(ctx, blk + gp + 4, (s16)nfree);
             }
-        } else if (pick == 12) {
-            god_mode(ctx, blk, pi->name);
         } else if (pick == 13) {
+            moves_editor(ctx, blk, pi->name);
+        } else if (pick == 14) {
+            avatar_editor(ctx, blk, pi->name);
+        } else if (pick == 15) {
+            equipment_editor(ctx, blk, pi->name);
+        } else if (pick == 16) {
+            flags_editor(ctx, blk, pi->name);
+        } else if (pick == 17) {
+            god_mode(ctx, blk, pi->name);
+        } else if (pick == 18) {
             char msg[96];
             snprintf(msg, sizeof(msg), "Reset freedom to %d and all\ninvested points to 0?", pi->freedom);
             if (ui_dialog("reset", msg, false)) {
@@ -1151,7 +1169,7 @@ static void edit_player(SaveCtx *ctx, u32 blk, const PlayerInfo *pi)
                 for (int i = 0; i < 8; i++)
                     wr16(ctx, blk + g->p_invest_off + i * 2, 0);
             }
-        } else if (pick == 14) {
+        } else if (pick == 19) {
             const PlayerInfo *np = player_db_picker(ctx, false);
             if (!np) continue;
             char msg[128];
@@ -1161,15 +1179,7 @@ static void edit_player(SaveCtx *ctx, u32 blk, const PlayerInfo *pi)
             int idx = rd32(ctx, blk + g->p_id_off - 4);
             write_player_block(ctx, blk, np, level, idx);
             return;
-        } else if (pick == 15) {
-            moves_editor(ctx, blk, pi->name);
-        } else if (pick == 16) {
-            avatar_editor(ctx, blk, pi->name);
-        } else if (pick == 17) {
-            equipment_editor(ctx, blk, pi->name);
-        } else if (pick == 18) {
-            flags_editor(ctx, blk, pi->name);
-        } else if (pick == 19) {
+        } else if (pick == 20) {
             player_bank_store(ctx, blk, pi);
         }
     }
@@ -1233,7 +1243,7 @@ void player_editor(SaveCtx *ctx)
         }
 
         int delta = 0;
-        int pick = ui_list_adj("Players (X: dismiss)", lines, n, cursor, &delta);
+        int pick = ui_list_adj("Players (X dismiss)", lines, n, cursor, &delta);
         if (pick < 0) break;
         cursor = pick;
         if (delta == 2 && pick >= 3) {
@@ -1437,6 +1447,7 @@ static const char *SUBCAT_NAMES[24] = {
     "Coaches", "Tactics", "Kits", "Emblems", "Spirits", "Totems", "PalPack Cards",
 };
 
+static int name_asc_cmp(const void *a, const void *b){return strcmp((const char*)a,(const char*)b);}
 struct irow { char name[28]; s32 qty, eq; u16 grp, si; u32 qoff, eoff; };
 static int irow_cmp(const void *a, const void *b)
 {
@@ -1488,7 +1499,7 @@ static void inventory_items(SaveCtx *ctx, int sub)
             struct irow *r = &rows_[k];
             slot_grp[n] = r->grp; slot_i[n] = r->si;
             qty_offs[n] = r->qoff; eq_offs[n] = r->eoff;
-            if (!r->qoff)               snprintf(labels[n], 48, "    %-26s (owned)", r->name);
+            if (!r->qoff)               snprintf(labels[n], 48, "     %-25s (owned)", r->name);
             else if (r->eoff)           snprintf(labels[n], 48, "x%-3ld %-22s (%ld eq)", (long)r->qty, r->name, (long)r->eq);
             else                        snprintf(labels[n], 48, "x%-3ld %-22s", (long)r->qty, r->name);
             lines[n] = labels[n];
@@ -1712,7 +1723,7 @@ void inventory_editor(SaveCtx *ctx)
             break;
         }
 
-        int pick = ui_list("Inventory (B: back)", lines, n, cursor);
+        int pick = ui_list("Inventory", lines, n, cursor);
         if (pick < 0) break;
         cursor = pick;
         if (pick == 0) inventory_batch(ctx);
@@ -1784,7 +1795,6 @@ static const ItemInfo *item_by_index(SaveCtx *ctx, int idx)
 static int owned_item_picker(SaveCtx *ctx, int sub, const char *title)
 {
     const GameDef *g = ctx->game;
-    static int idxs[PICK_MAX];
     int n = 0;
     for (int grp = 0; grp < 3 && n < PICK_MAX; grp++) {
         u32 base = (grp == 0) ? g->g1_off : (grp == 1) ? g->g2_off : g->g3_off;
@@ -1797,7 +1807,7 @@ static int owned_item_picker(SaveCtx *ctx, int sub, const char *title)
             if (!id) continue;
             const ItemInfo *ii = item_info(g, id);
             if (!ii || ii->sub != sub) continue;
-            idxs[n] = rd32(ctx, e);
+            pick_ptr[n] = (const void *)(intptr_t)rd32(ctx, e);
             snprintf(pick_lab[n], 40, "%s", ii->name);
             pick_lines[n] = pick_lab[n];
             n++;
@@ -1808,15 +1818,15 @@ static int owned_item_picker(SaveCtx *ctx, int sub, const char *title)
         ui_notice("You own nothing of that type.", false);
         return 0;
     }
+    pick_sort(n);
     int pick = ui_list(title, pick_lines, n, 0);
-    return (pick < 0) ? 0 : idxs[pick];
+    return (pick < 0) ? 0 : (int)(intptr_t)pick_ptr[pick];
 }
 
 /* pick a player from the reserve; returns roster index (0 = cancel) */
 static int reserve_picker(SaveCtx *ctx)
 {
     const GameDef *g = ctx->game;
-    static int idxs[PICK_MAX];
     int n = 0;
     for (int i = 0; i < g->pmax && n < PICK_MAX; i++) {
         u32 blk = g->pdata_off + (u32)i * g->pblock;
@@ -1826,17 +1836,19 @@ static int reserve_picker(SaveCtx *ctx)
         int ridx = rd32(ctx, blk + g->p_id_off - 4);
         if (!ridx) continue;
         const PlayerInfo *pi = player_info(g, id);
-        idxs[n] = ridx;
+        pick_ptr[n] = (const void *)(intptr_t)ridx;
+        /* name-first label so the sort orders by player name */
         if (pi)
-            snprintf(pick_lab[n], 40, "L%-3d %-2s %s", ctx->plain[blk + g->p_gp_off + 6], pi->pos, pi->name);
+            snprintf(pick_lab[n], 40, "%-18s L%-3d %-2s", pi->name, ctx->plain[blk + g->p_gp_off + 6], pi->pos);
         else
-            snprintf(pick_lab[n], 40, "L%-3d ?? %08lX", ctx->plain[blk + g->p_gp_off + 6], (unsigned long)id);
+            snprintf(pick_lab[n], 40, "%08lX L%-3d", (unsigned long)id, ctx->plain[blk + g->p_gp_off + 6]);
         pick_lines[n] = pick_lab[n];
         n++;
     }
     if (!n) return 0;
+    pick_sort(n);
     int pick = ui_list("Pick a player", pick_lines, n, 0);
-    return (pick < 0) ? 0 : idxs[pick];
+    return (pick < 0) ? 0 : (int)(intptr_t)pick_ptr[pick];
 }
 
 static const char *roster_name(SaveCtx *ctx, int ridx, char *buf, size_t bufsz)
@@ -2046,6 +2058,7 @@ static void team_bank(SaveCtx *ctx)
             ui_notice("Bank empty. In the team list,\npress X on a team to store it.", false);
             return;
         }
+        qsort(names, n, 48, name_asc_cmp);
         const char *lines[64];
         for (int i = 0; i < n; i++) lines[i] = names[i];
         int pick = ui_list("Team bank", lines, n, cursor);
@@ -2342,6 +2355,7 @@ bool apply_changes(SaveCtx *ctx)
     ie_xor_body(old, ctx->size);
     if (!memcmp(old, ctx->plain, ctx->size - 8)) {
         free(old);
+        ui_header();
         ui_notice("No changes to save.", false);
         return false;
     }

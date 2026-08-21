@@ -494,7 +494,7 @@ void backup_manager(SaveCtx *ctx)
                      tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday, tm->tm_hour, tm->tm_min);
             if (!ui_text("Backup name", def, name, 40)) continue;
             ui_header();
-            ui_notice(backup_save(ctx, name) ? "Backup written." : "Backup FAILED.", true);
+            bool bok = backup_save(ctx, name); ui_notice(bok ? "Backup written." : "Backup failed.", bok);
             continue;
         }
 
@@ -536,8 +536,8 @@ void backup_manager(SaveCtx *ctx)
                      var ? var : ctx->game->name);
             if (!ui_dialog("restore", msg, false)) continue;
             ui_header();
-            ui_notice(restore_from_path(ctx, full) ? "Restored and committed."
-                                                    : "RESTORE FAILED, see log.", true);
+            bool rok2 = restore_from_path(ctx, full);
+            ui_notice(rok2 ? "Restored and committed." : "Restore failed, see log.", rok2);
         } else if (act == 1) {
             char base[40];
             snprintf(base, sizeof(base), "%.*s", (int)(strlen(bak) - 4), bak);
@@ -547,7 +547,7 @@ void backup_manager(SaveCtx *ctx)
             snprintf(from, sizeof(from), "%s/%s", dir, bak);
             snprintf(to, sizeof(to), "%s/%s.bak", dir, name);
             ui_header();
-            ui_notice(rename(from, to) == 0 ? "Renamed." : "Rename failed.", true);
+            bool mok = (rename(from, to) == 0); ui_notice(mok ? "Renamed." : "Rename failed.", mok);
         } else if (act == 2) {
             char msg[128];
             snprintf(msg, sizeof(msg), "Delete %s permanently?", bak);
@@ -555,7 +555,7 @@ void backup_manager(SaveCtx *ctx)
             char full[0x300];
             snprintf(full, sizeof(full), "%s/%s", dir, bak);
             ui_header();
-            ui_notice(remove(full) == 0 ? "Deleted." : "Delete failed.", true);
+            bool dok = (remove(full) == 0); ui_notice(dok ? "Deleted." : "Delete failed.", dok);
         }
     }
 }
@@ -616,14 +616,14 @@ void export_import(SaveCtx *ctx)
         snprintf(full, sizeof(full), EXPORT_DIR "/%s", names[f]);
         if (stat(full, &st) != 0 || !bak_matches_game(ctx, full, st.st_size)) {
             ui_header();
-            ui_notice("Refused: not a save of this game.", false);
+            ui_notice("Refused: backup is not a save of\nthis game.", false);
             continue;
         }
         char msg[128];
         snprintf(msg, sizeof(msg), "Import %s\nover the current save?", names[f]);
         if (!ui_dialog("import", msg, true)) continue;
         ui_header();
-        ui_notice(restore_from_path(ctx, full) ? "Imported and committed."
-                                               : "IMPORT FAILED, see log.", true);
+        bool iok = restore_from_path(ctx, full);
+        ui_notice(iok ? "Imported and committed." : "Import failed, see log.", iok);
     }
 }
