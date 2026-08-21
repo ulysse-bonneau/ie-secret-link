@@ -15,6 +15,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: python3 pctool/iesave.py selftest
+      - name: VERSION matches app.h
+        run: |
+          a=$(grep -oP '#define VERSION "\K[^"]+' 3ds/source/app.h)
+          f=$(tr -d ' \n\r' < VERSION)
+          echo "app.h=$a VERSION=$f"; test "$a" = "$f"
       - run: tests/parity.sh
 
   build:

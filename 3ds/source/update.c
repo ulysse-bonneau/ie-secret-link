@@ -12,8 +12,11 @@ static Result get_status(httpcContext *ctx, u32 *status)
 {
     Result rc = 0;
     for (int i = 0; i < 25; i++) {
+        *status = 0;
         rc = httpcGetResponseStatusCode(ctx, status);
-        if (R_SUCCEEDED(rc)) return rc;
+        if (R_SUCCEEDED(rc)) return 0;
+        /* httpc can report InvalidState yet still fill a valid HTTP status */
+        if (*status >= 100 && *status < 600) return 0;
         svcSleepThread(20 * 1000 * 1000LL); /* 20 ms */
     }
     return rc;
@@ -22,6 +25,7 @@ static Result get_status(httpcContext *ctx, u32 *status)
 #define REPO "ulysse-bonneau/iesm"
 #define LATEST_URL "https://github.com/" REPO "/releases/latest"
 #define CIA_URL "https://github.com/" REPO "/releases/latest/download/iesm.cia"
+#define VERSION_URL "https://raw.githubusercontent.com/" REPO "/main/VERSION"
 
 /* open a context following redirects; caller closes */
 static Result http_open(httpcContext *ctx, const char *url)
@@ -63,40 +67,39 @@ static Result http_open(httpcContext *ctx, const char *url)
 static bool fetch_latest_tag(char *out, size_t outsz)
 {
     httpcContext ctx;
-    Result rc = httpcOpenContext(&ctx, HTTPC_METHOD_GET, LATEST_URL, 1);
+    Result rc = httpcOpenContext(&ctx, HTTPC_METHOD_GET, VERSION_URL, 1);
     logline("upd: open %08lX", (unsigned long)rc);
     if (R_FAILED(rc)) return false;
     httpcSetSSLOpt(&ctx, SSLCOPT_DisableVerify);
     httpcSetKeepAlive(&ctx, HTTPC_KEEPALIVE_ENABLED);
     httpcAddRequestHeaderField(&ctx, "User-Agent", UA);
     httpcAddRequestHeaderField(&ctx, "Connection", "Keep-Alive");
-    bool ok = false;
-    char loc[0x200] = "";
     rc = httpcBeginRequest(&ctx);
     logline("upd: begin %08lX", (unsigned long)rc);
-    if (R_SUCCEEDED(rc)) {
-        u32 status = 0;
-        rc = get_status(&ctx, &status);
-        logline("upd: status rc=%08lX http=%lu", (unsigned long)rc, (unsigned long)status);
-        if (R_SUCCEEDED(rc) && status >= 300 && status < 400 &&
-            R_SUCCEEDED(httpcGetResponseHeader(&ctx, "Location", loc, sizeof(loc)))) {
-            ok = true;
-            logline("upd: loc %.40s", loc);
-        } else if (R_SUCCEEDED(rc) && status == 200) {
-            /* no redirect: shouldn't happen for /latest, but handle */
-            ok = false;
-        }
+    u32 status = 0;
+    if (R_SUCCEEDED(rc)) rc = get_status(&ctx, &status);
+    logline("upd: status rc=%08lX http=%lu", (unsigned long)rc, (unsigned long)status);
+    if (R_FAILED(rc) || status != 200) { httpcCloseContext(&ctx); return false; }
+
+    char body[64];
+    u32 total = 0;
+    while (total < sizeof(body) - 1) {
+        u32 got = 0;
+        Result dr = httpcDownloadData(&ctx, (u8 *)body + total, sizeof(body) - 1 - total, &got);
+        total += got;
+        if (dr == 0) break;
+        if (dr != (Result)HTTPC_RESULTCODE_DOWNLOADPENDING) break;
     }
     httpcCloseContext(&ctx);
-    if (!ok) return false;
-    const char *p = strstr(loc, "/tag/");
-    if (!p) return false;
-    p += 5;
+    body[total] = 0;
+    logline("upd: body '%.20s' (%lu)", body, (unsigned long)total);
+    /* trim whitespace/newlines */
+    char *p = body;
+    while (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t') p++;
     size_t l = strlen(p);
-    while (l && (p[l - 1] == '\r' || p[l - 1] == '\n' || p[l - 1] == '/')) l--;
+    while (l && (p[l-1] == '\n' || p[l-1] == '\r' || p[l-1] == ' ' || p[l-1] == '\t')) l--;
     if (!l || l >= outsz) return false;
-    memcpy(out, p, l);
-    out[l] = 0;
+    memcpy(out, p, l); out[l] = 0;
     return true;
 }
 

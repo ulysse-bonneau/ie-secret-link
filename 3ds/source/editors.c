@@ -1437,6 +1437,11 @@ static const char *SUBCAT_NAMES[24] = {
     "Coaches", "Tactics", "Kits", "Emblems", "Spirits", "Totems", "PalPack Cards",
 };
 
+struct irow { char name[28]; s32 qty, eq; u16 grp, si; u32 qoff, eoff; };
+static int irow_cmp(const void *a, const void *b)
+{
+    return strcmp(((const struct irow *)a)->name, ((const struct irow *)b)->name);
+}
 static void inventory_items(SaveCtx *ctx, int sub)
 {
     const GameDef *g = ctx->game;
@@ -1447,45 +1452,46 @@ static void inventory_items(SaveCtx *ctx, int sub)
     const char *lines[MAX_ITEMS];
     int cursor = 0;
 
+    static struct irow rows_[MAX_ITEMS];
+
     while (aptMainLoop()) {
-        int n = 1;
-        snprintf(labels[0], 48, "[ Add item ]");
-        lines[0] = labels[0];
-        qty_offs[0] = 0;
-        eq_offs[0] = 0;
+        int m = 0;
         for (int grp = 0; grp < 3; grp++) {
             u32 base = (grp == 0) ? g->g1_off : (grp == 1) ? g->g2_off : g->g3_off;
             u32 stride = (grp == 0) ? 12 : (grp == 1) ? 16 : 8;
             int cnt = (grp == 0) ? g->g1_n : (grp == 1) ? g->g2_n : g->g3_n;
-            for (int i = 0; i < cnt && n < MAX_ITEMS; i++) {
+            for (int i = 0; i < cnt && m < MAX_ITEMS - 1; i++) {
                 u32 e = base + (u32)i * stride;
                 u32 id;
                 memcpy(&id, ctx->plain + e + 4, 4);
                 if (!id) continue;
                 const ItemInfo *ii = item_info(g, id);
                 if (!ii || ii->sub != sub) continue;
-                slot_grp[n] = (u16)grp;
-                slot_i[n] = (u16)i;
-                if (grp == 2) {
-                    qty_offs[n] = 0;
-                    eq_offs[n] = 0;
-                    snprintf(labels[n], 48, "    %-26s (owned)", ii->name);
-                } else {
-                    s32 qty;
-                    memcpy(&qty, ctx->plain + e + 8, 4);
-                    qty_offs[n] = e + 8;
-                    eq_offs[n] = (grp == 1) ? e + 12 : 0;
-                    if (grp == 1) {
-                        s32 eq;
-                        memcpy(&eq, ctx->plain + e + 12, 4);
-                        snprintf(labels[n], 48, "%3ld %-26s (%ld eq)", (long)qty, ii->name, (long)eq);
-                    } else {
-                        snprintf(labels[n], 48, "%3ld %-26s", (long)qty, ii->name);
-                    }
+                struct irow *r = &rows_[m++];
+                snprintf(r->name, sizeof(r->name), "%s", ii->name);
+                r->grp = (u16)grp; r->si = (u16)i;
+                if (grp == 2) { r->qoff = 0; r->eoff = 0; r->qty = 0; r->eq = 0; }
+                else {
+                    memcpy(&r->qty, ctx->plain + e + 8, 4);
+                    r->qoff = e + 8;
+                    r->eoff = (grp == 1) ? e + 12 : 0;
+                    if (grp == 1) memcpy(&r->eq, ctx->plain + e + 12, 4); else r->eq = 0;
                 }
-                lines[n] = labels[n];
-                n++;
             }
+        }
+        qsort(rows_, m, sizeof(struct irow), irow_cmp);
+
+        int n = 1;
+        snprintf(labels[0], 48, "[ Add item ]");
+        lines[0] = labels[0]; qty_offs[0] = 0; eq_offs[0] = 0;
+        for (int k = 0; k < m; k++, n++) {
+            struct irow *r = &rows_[k];
+            slot_grp[n] = r->grp; slot_i[n] = r->si;
+            qty_offs[n] = r->qoff; eq_offs[n] = r->eoff;
+            if (!r->qoff)               snprintf(labels[n], 48, "    %-26s (owned)", r->name);
+            else if (r->eoff)           snprintf(labels[n], 48, "x%-3ld %-22s (%ld eq)", (long)r->qty, r->name, (long)r->eq);
+            else                        snprintf(labels[n], 48, "x%-3ld %-22s", (long)r->qty, r->name);
+            lines[n] = labels[n];
         }
         int delta = 0;
         int pick = ui_list_adj(SUBCAT_NAMES[(sub >= 0 && sub < 24) ? sub : 0], lines, n, cursor, &delta);
