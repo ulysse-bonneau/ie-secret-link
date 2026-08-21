@@ -12,6 +12,7 @@ static void wr32(SaveCtx *ctx, u32 off, s32 v) { memcpy(ctx->plain + off, &v, 4)
 static s16 rd16(SaveCtx *ctx, u32 off) { s16 v; memcpy(&v, ctx->plain + off, 2); return v; }
 static void wr16(SaveCtx *ctx, u32 off, s16 v) { memcpy(ctx->plain + off, &v, 2); }
 static void struct_pack16(u8 *p, u32 off, u16 v) { memcpy(p + off, &v, 2); }
+static int name_asc_cmp(const void *a, const void *b) { return strcmp((const char *)a, (const char *)b); }
 
 #define PICK_MAX 4096
 
@@ -1063,7 +1064,7 @@ static void edit_player(SaveCtx *ctx, u32 blk, const PlayerInfo *pi)
             int b = stat_base(pi, i, level);
             snprintf(rows[4 + i], 48, "%-9s %3d %+4d = %d", STAT_NAMES[i], b, inv[i], b + inv[i]);
         }
-        snprintf(rows[12], 48, "\x1fActions");
+        snprintf(rows[12], 48, "\x1f" "Actions");
         snprintf(rows[13], 48, "[ Moves ]");
         snprintf(rows[14], 48, "[ Avatar ]");
         snprintf(rows[15], 48, "[ Equipment ]");
@@ -1447,7 +1448,6 @@ static const char *SUBCAT_NAMES[24] = {
     "Coaches", "Tactics", "Kits", "Emblems", "Spirits", "Totems", "PalPack Cards",
 };
 
-static int name_asc_cmp(const void *a, const void *b){return strcmp((const char*)a,(const char*)b);}
 struct irow { char name[28]; s32 qty, eq; u16 grp, si; u32 qoff, eoff; };
 static int irow_cmp(const void *a, const void *b)
 {
