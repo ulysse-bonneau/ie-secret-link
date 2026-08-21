@@ -4,6 +4,21 @@
 #include <string.h>
 #include "app.h"
 
+#define UA "Mozilla/5.0 (Nintendo 3DS; U; ; en) IESM"
+
+/* GetResponseStatusCode can briefly return DOWNLOADPENDING or a transient
+ * InvalidState right after BeginRequest; retry a few times. */
+static Result get_status(httpcContext *ctx, u32 *status)
+{
+    Result rc = 0;
+    for (int i = 0; i < 25; i++) {
+        rc = httpcGetResponseStatusCode(ctx, status);
+        if (R_SUCCEEDED(rc)) return rc;
+        svcSleepThread(20 * 1000 * 1000LL); /* 20 ms */
+    }
+    return rc;
+}
+
 #define REPO "ulysse-bonneau/iesm"
 #define LATEST_URL "https://github.com/" REPO "/releases/latest"
 #define CIA_URL "https://github.com/" REPO "/releases/latest/download/iesm.cia"
@@ -17,10 +32,13 @@ static Result http_open(httpcContext *ctx, const char *url)
         Result rc = httpcOpenContext(ctx, HTTPC_METHOD_GET, loc, 1);
         if (R_FAILED(rc)) return rc;
         httpcSetSSLOpt(ctx, SSLCOPT_DisableVerify);
-        httpcAddRequestHeaderField(ctx, "User-Agent", "IESM");
+        httpcSetKeepAlive(ctx, HTTPC_KEEPALIVE_ENABLED);
+        httpcAddRequestHeaderField(ctx, "User-Agent", UA);
+        httpcAddRequestHeaderField(ctx, "Connection", "Keep-Alive");
         rc = httpcBeginRequest(ctx);
         u32 status = 0;
-        if (R_SUCCEEDED(rc)) rc = httpcGetResponseStatusCode(ctx, &status);
+        if (R_SUCCEEDED(rc)) rc = get_status(ctx, &status);
+        logline("http_open hop=%d begin/status rc=%08lX http=%lu", hop, (unsigned long)rc, (unsigned long)status);
         if (R_FAILED(rc)) {
             httpcCloseContext(ctx);
             return rc;
@@ -50,7 +68,7 @@ static bool fetch_latest_tag(char *out, size_t outsz)
     if (R_FAILED(rc)) return false;
     httpcSetSSLOpt(&ctx, SSLCOPT_DisableVerify);
     httpcSetKeepAlive(&ctx, HTTPC_KEEPALIVE_ENABLED);
-    httpcAddRequestHeaderField(&ctx, "User-Agent", "IESM");
+    httpcAddRequestHeaderField(&ctx, "User-Agent", UA);
     httpcAddRequestHeaderField(&ctx, "Connection", "Keep-Alive");
     bool ok = false;
     char loc[0x200] = "";
@@ -58,7 +76,7 @@ static bool fetch_latest_tag(char *out, size_t outsz)
     logline("upd: begin %08lX", (unsigned long)rc);
     if (R_SUCCEEDED(rc)) {
         u32 status = 0;
-        rc = httpcGetResponseStatusCode(&ctx, &status);
+        rc = get_status(&ctx, &status);
         logline("upd: status rc=%08lX http=%lu", (unsigned long)rc, (unsigned long)status);
         if (R_SUCCEEDED(rc) && status >= 300 && status < 400 &&
             R_SUCCEEDED(httpcGetResponseHeader(&ctx, "Location", loc, sizeof(loc)))) {

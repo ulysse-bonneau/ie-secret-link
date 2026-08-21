@@ -50,6 +50,51 @@ void migrate_backups(void)
     if (moved) logline("sorted %d backup(s) into game folders", moved);
 }
 
+static bool arch_write(SaveCtx *ctx, const char *name, const u8 *buf, u32 size)
+{
+    char path[0x40];
+    snprintf(path, sizeof(path), "/%s", name);
+    Handle f;
+    if (R_FAILED(FSUSER_OpenFile(&f, ctx->arch, fsMakePath(PATH_ASCII, path),
+                                 FS_OPEN_WRITE | FS_OPEN_CREATE, 0))) return false;
+    u32 w = 0;
+    bool ok = R_SUCCEEDED(FSFILE_SetSize(f, size))
+           && R_SUCCEEDED(FSFILE_Write(f, &w, 0, buf, size, FS_WRITE_FLUSH)) && w == size;
+    FSFILE_Close(f);
+    return ok;
+}
+
+/* copy every archive file other than the loaded game save into sidecar files
+ * named "<base>.<archivename>"; returns count written */
+static int backup_sidecars(SaveCtx *ctx, const char *dir, const char *base)
+{
+    const char *self = ctx->filepath[0] == '/' ? ctx->filepath + 1 : ctx->filepath;
+    Handle d;
+    if (R_FAILED(FSUSER_OpenDirectory(&d, ctx->arch, fsMakePath(PATH_ASCII, "/")))) return 0;
+    FS_DirectoryEntry e; u32 n; int cnt = 0;
+    while (R_SUCCEEDED(FSDIR_Read(d, &n, 1, &e)) && n == 1) {
+        if (e.attributes & FS_ATTRIBUTE_DIRECTORY) continue;
+        char nm[0x40]; int j = 0;
+        for (; j < 0x3F && e.name[j]; j++) nm[j] = (e.name[j] < 0x80) ? (char)e.name[j] : '_';
+        nm[j] = 0;
+        if (!strcmp(nm, self)) continue;               /* game.ie handled separately */
+        if (e.fileSize == 0 || e.fileSize > 0x100000) continue;
+        Handle f; char ap[0x40]; snprintf(ap, sizeof(ap), "/%s", nm);
+        if (R_FAILED(FSUSER_OpenFile(&f, ctx->arch, fsMakePath(PATH_ASCII, ap), FS_OPEN_READ, 0))) continue;
+        u32 sz = (u32)e.fileSize, rd = 0; u8 *b = malloc(sz);
+        bool rok = R_SUCCEEDED(FSFILE_Read(f, &rd, 0, b, sz)) && rd == sz;
+        FSFILE_Close(f);
+        if (rok) {
+            char sp[0x340]; snprintf(sp, sizeof(sp), "%s/%s.%s", dir, base, nm);
+            FILE *o = fopen(sp, "wb");
+            if (o) { if (fwrite(b, 1, sz, o) == sz) cnt++; fclose(o); }
+        }
+        free(b);
+    }
+    FSDIR_Close(d);
+    return cnt;
+}
+
 bool backup_save(SaveCtx *ctx, const char *name)
 {
     char dir[0x40], path[0x300];
@@ -69,9 +114,14 @@ bool backup_save(SaveCtx *ctx, const char *name)
     if (!out) return false;
     bool ok = fwrite(ctx->raw, 1, ctx->size, out) == ctx->size;
     fclose(out);
-    if (ok) logline("backup: sd:%s", path);
-    else remove(path);
-    return ok;
+    if (!ok) { remove(path); return false; }
+    /* derive base (strip ".bak") and copy companion archive files (head.ie) */
+    char base[0x80];
+    const char *fn = strrchr(path, '/'); fn = fn ? fn + 1 : path;
+    snprintf(base, sizeof(base), "%.*s", (int)(strlen(fn) - 4), fn);
+    int sc = backup_sidecars(ctx, dir, base);
+    logline("backup: sd:%s (+%d companion file(s))", path, sc);
+    return true;
 }
 
 /* the backup's magic must match the currently loaded game */
@@ -102,18 +152,35 @@ static bool restore_from_path(SaveCtx *ctx, const char *full)
     if (!rok || size < 0x1000) { free(buf); return false; }
 
     logline("restoring %s (%ld b) into %s", full, size, ctx->filepath);
-    Handle f;
-    bool ok = false;
-    if (R_SUCCEEDED(FSUSER_OpenFile(&f, ctx->arch, fsMakePath(PATH_ASCII, ctx->filepath),
-                                    FS_OPEN_WRITE | FS_OPEN_CREATE, 0))) {
-        u32 written = 0;
-        ok = R_SUCCEEDED(FSFILE_SetSize(f, (u64)size))
-          && R_SUCCEEDED(FSFILE_Write(f, &written, 0, buf, (u32)size, FS_WRITE_FLUSH))
-          && written == (u32)size;
-        FSFILE_Close(f);
-        if (ok)
-            ok = R_SUCCEEDED(FSUSER_ControlArchive(ctx->arch, ARCHIVE_ACTION_COMMIT_SAVE_DATA,
-                                                   NULL, 0, NULL, 0));
+    const char *self = ctx->filepath[0] == '/' ? ctx->filepath + 1 : ctx->filepath;
+    bool ok = arch_write(ctx, self, buf, (u32)size);
+    /* restore companion files: "<full-without-.bak>.<name>" */
+    if (ok) {
+        char stem[0x340];
+        snprintf(stem, sizeof(stem), "%.*s", (int)(strlen(full) - 4), full);
+        Handle d;
+        if (R_SUCCEEDED(FSUSER_OpenDirectory(&d, ctx->arch, fsMakePath(PATH_ASCII, "/")))) {
+            FS_DirectoryEntry e; u32 n;
+            while (R_SUCCEEDED(FSDIR_Read(d, &n, 1, &e)) && n == 1) {
+                if (e.attributes & FS_ATTRIBUTE_DIRECTORY) continue;
+                char nm[0x40]; int j = 0;
+                for (; j < 0x3F && e.name[j]; j++) nm[j] = (e.name[j] < 0x80) ? (char)e.name[j] : '_';
+                nm[j] = 0;
+                if (!strcmp(nm, self)) continue;
+                char sp[0x360]; snprintf(sp, sizeof(sp), "%s.%s", stem, nm);
+                FILE *sf = fopen(sp, "rb");
+                if (!sf) continue;
+                fseek(sf, 0, SEEK_END); long ss = ftell(sf); fseek(sf, 0, SEEK_SET);
+                u8 *sb = malloc(ss);
+                if (fread(sb, 1, ss, sf) == (size_t)ss) {
+                    if (arch_write(ctx, nm, sb, (u32)ss)) logline("  companion %s (%ld b)", nm, ss);
+                }
+                free(sb); fclose(sf);
+            }
+            FSDIR_Close(d);
+        }
+        ok = R_SUCCEEDED(FSUSER_ControlArchive(ctx->arch, ARCHIVE_ACTION_COMMIT_SAVE_DATA,
+                                               NULL, 0, NULL, 0));
     }
     if (ok) {
         free(ctx->raw);
