@@ -81,12 +81,16 @@ static bool fetch_latest_tag(char *out, size_t outsz)
     logline("upd: status rc=%08lX http=%lu", (unsigned long)rc, (unsigned long)status);
     if (R_FAILED(rc) || status != 200) { httpcCloseContext(&ctx); return false; }
 
+    u32 dcur = 0, dtot = 0;
+    httpcGetDownloadSizeState(&ctx, &dcur, &dtot);
+    logline("upd: dlsize cur=%lu tot=%lu", (unsigned long)dcur, (unsigned long)dtot);
     char body[64];
     u32 total = 0;
-    while (total < sizeof(body) - 1) {
+    for (int it = 0; it < 64 && total < sizeof(body) - 1; it++) {
         u32 got = 0;
         Result dr = httpcDownloadData(&ctx, (u8 *)body + total, sizeof(body) - 1 - total, &got);
         total += got;
+        logline("upd: dl rc=%08lX got=%lu", (unsigned long)dr, (unsigned long)got);
         if (dr == 0) break;
         if (dr != (Result)HTTPC_RESULTCODE_DOWNLOADPENDING) break;
     }
