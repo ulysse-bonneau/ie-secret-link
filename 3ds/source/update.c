@@ -45,17 +45,29 @@ static Result http_open(httpcContext *ctx, const char *url)
 static bool fetch_latest_tag(char *out, size_t outsz)
 {
     httpcContext ctx;
-    if (R_FAILED(httpcOpenContext(&ctx, HTTPC_METHOD_GET, LATEST_URL, 1))) return false;
+    Result rc = httpcOpenContext(&ctx, HTTPC_METHOD_GET, LATEST_URL, 1);
+    logline("upd: open %08lX", (unsigned long)rc);
+    if (R_FAILED(rc)) return false;
     httpcSetSSLOpt(&ctx, SSLCOPT_DisableVerify);
+    httpcSetKeepAlive(&ctx, HTTPC_KEEPALIVE_ENABLED);
     httpcAddRequestHeaderField(&ctx, "User-Agent", "IESM");
+    httpcAddRequestHeaderField(&ctx, "Connection", "Keep-Alive");
     bool ok = false;
     char loc[0x200] = "";
-    if (R_SUCCEEDED(httpcBeginRequest(&ctx))) {
+    rc = httpcBeginRequest(&ctx);
+    logline("upd: begin %08lX", (unsigned long)rc);
+    if (R_SUCCEEDED(rc)) {
         u32 status = 0;
-        if (R_SUCCEEDED(httpcGetResponseStatusCode(&ctx, &status)) &&
-            status >= 300 && status < 400 &&
-            R_SUCCEEDED(httpcGetResponseHeader(&ctx, "Location", loc, sizeof(loc))))
+        rc = httpcGetResponseStatusCode(&ctx, &status);
+        logline("upd: status rc=%08lX http=%lu", (unsigned long)rc, (unsigned long)status);
+        if (R_SUCCEEDED(rc) && status >= 300 && status < 400 &&
+            R_SUCCEEDED(httpcGetResponseHeader(&ctx, "Location", loc, sizeof(loc)))) {
             ok = true;
+            logline("upd: loc %.40s", loc);
+        } else if (R_SUCCEEDED(rc) && status == 200) {
+            /* no redirect: shouldn't happen for /latest, but handle */
+            ok = false;
+        }
     }
     httpcCloseContext(&ctx);
     if (!ok) return false;
