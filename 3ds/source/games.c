@@ -20,6 +20,7 @@ const GameDef GAMES[] = {
         .t_info = 0x26914, .t_info_str = 0x34, .t_name = 0x26B50, .t_name_str = 0x20, .t_players = 0x273A8, .t_count = 10,
         .p_equip_off = 76, .p_invoke_off = 38, .p_style_off = 39, .p_part_off = 40,
         .rdb = GALAXY_RDB, .rdb_count = GALAXY_RDB_COUNT,
+        .csum_flag = 0x8F62, .csum_a = 0x8F6A, .csum_b = 0x9F16,
         .unlock = UNLOCK_GALAXY, .unlock_n = UNLOCK_GALAXY_N, .unlock_end = UNLOCK_GALAXY_END,
         .unlock_label = "Unlock data DL + QR + GO/CS link",
     },

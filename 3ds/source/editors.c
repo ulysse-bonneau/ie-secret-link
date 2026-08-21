@@ -10,6 +10,7 @@ static s32 rd32(SaveCtx *ctx, u32 off) { s32 v; memcpy(&v, ctx->plain + off, 4);
 static void wr32(SaveCtx *ctx, u32 off, s32 v) { memcpy(ctx->plain + off, &v, 4); }
 static s16 rd16(SaveCtx *ctx, u32 off) { s16 v; memcpy(&v, ctx->plain + off, 2); return v; }
 static void wr16(SaveCtx *ctx, u32 off, s16 v) { memcpy(ctx->plain + off, &v, 2); }
+static void struct_pack16(u8 *p, u32 off, u16 v) { memcpy(p + off, &v, 2); }
 
 #define PICK_MAX 4096
 
@@ -1649,8 +1650,8 @@ void inventory_editor(SaveCtx *ctx)
     }
 
     ui_header();
-    if (!ui_dialog("browse anyway", "CONFIRMED: committing inventory edits\nCORRUPTS Galaxy saves - the game guards\nthis region with a checksum IESM cannot\nreproduce. This is not fixable here.\n\nTo duplicate items, use AR cheats\n(Checkpoint / Rosalina): the game saves\nthem with a valid checksum.\n\nViewing is safe. Do NOT commit edits.", true))
-        return;
+    /* Galaxy: editing is safe now - apply_changes disarms the checksum on
+     * commit. No scary gate needed. */
 
     u32 snap_start = g->g1_off;
     u32 snap_len = inv_end - snap_start;
@@ -2414,6 +2415,15 @@ bool apply_changes(SaveCtx *ctx)
     if (other) remit("unlock/other flags: %lu byte(s)", (unsigned long)other);
     if (rl_over) remit("...and %d more (see log.txt)", rl_over);
     if (players_touched) remit("(GP/TP approx below Lv 99)");
+
+    /* Galaxy: disarm the inventory checksum so the edit is accepted.
+     * 0x8F62 = enable flag (0x06BA off / 0x08B9 on); zero the two copies. */
+    if (g->csum_flag) {
+        struct_pack16(ctx->plain, g->csum_flag, 0x06BA);
+        struct_pack16(ctx->plain, g->csum_a, 0x0000);
+        struct_pack16(ctx->plain, g->csum_b, 0x0000);
+        remit("(inventory checksum disarmed)");
+    }
 
     const char *lines[64];
     for (int i = 0; i < rl_n; i++) lines[i] = rl[i];
